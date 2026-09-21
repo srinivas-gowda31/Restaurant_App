@@ -1,0 +1,139 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Hotel {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  menuItems    MenuItem[]
+  spaServices  SpaService[]
+  uploads      Upload[]
+  sessions     Session[]
+  orders       Order[]
+}
+
+model MenuItem {
+  id          String   @id @default(cuid())
+  hotelId     String
+  name        String
+  category    String
+  vegetarian  Boolean  @default(true)
+  price       Float
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  hotel      Hotel       @relation(fields: [hotelId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([hotelId])
+}
+
+model SpaService {
+  id          String   @id @default(cuid())
+  hotelId     String
+  name        String
+  category    String
+  durationMin Int?
+  price       Float
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  hotel      Hotel       @relation(fields: [hotelId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([hotelId])
+}
+
+model Upload {
+  id                String   @id @default(cuid())
+  hotelId           String
+  type              String
+  fileName          String
+  status            String   @default("pending_review")
+  rawExtractionJson String?
+  createdAt         DateTime @default(now())
+  reviewedAt        DateTime?
+
+  hotel Hotel @relation(fields: [hotelId], references: [id])
+
+  @@index([hotelId])
+}
+
+model Session {
+  id        String   @id
+  hotelId   String
+  createdAt DateTime @default(now())
+
+  hotel    Hotel         @relation(fields: [hotelId], references: [id])
+  messages ChatMessage[]
+  voiceLogs VoiceLog[]
+  orders    Order[]
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  sessionId String
+  role      String
+  content   String
+  createdAt DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+}
+
+model VoiceLog {
+  id         String   @id @default(cuid())
+  sessionId  String
+  transcript String
+  createdAt  DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+}
+
+model Order {
+  id          String   @id @default(cuid())
+  hotelId     String
+  sessionId   String
+  guestName   String?
+  roomNumber  String?
+  status      String   @default("confirmed")
+  total       Float
+  createdAt   DateTime @default(now())
+
+  hotel   Hotel       @relation(fields: [hotelId], references: [id])
+  session Session     @relation(fields: [sessionId], references: [id])
+  items   OrderItem[]
+
+  @@index([hotelId])
+  @@index([sessionId])
+}
+
+model OrderItem {
+  id           String  @id @default(cuid())
+  orderId      String
+  menuItemId   String?
+  spaServiceId String?
+  name         String
+  quantity     Int     @default(1)
+  unitPrice    Float
+
+  order      Order       @relation(fields: [orderId], references: [id])
+  menuItem   MenuItem?   @relation(fields: [menuItemId], references: [id])
+  spaService SpaService? @relation(fields: [spaServiceId], references: [id])
+
+  @@index([orderId])
+}
