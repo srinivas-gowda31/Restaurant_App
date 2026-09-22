@@ -5,7 +5,11 @@ import {
   fetchAdminSpaServices,
   updateMenuItem,
   updateSpaService,
+  createMenuItem,
+  createSpaService,
 } from "../services/api.js";
+
+const EMPTY_DRAFT = { name: "", category: "", price: "", description: "", vegetarian: true, durationMin: "" };
 
 export default function MenuManagement({ type }) {
   const isSpa = type === "spa";
@@ -13,6 +17,9 @@ export default function MenuManagement({ type }) {
   const [error, setError] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState({});
+  const [isAdding, setIsAdding] = useState(false);
+  const [newItem, setNewItem] = useState(EMPTY_DRAFT);
+  const [addError, setAddError] = useState(null);
 
   const load = () => {
     const fetcher = isSpa ? fetchAdminSpaServices : fetchAdminMenuItems;
@@ -41,23 +48,132 @@ export default function MenuManagement({ type }) {
     load();
   };
 
+  const submitNewItem = async (e) => {
+    e.preventDefault();
+    if (!newItem.name.trim() || !newItem.price) {
+      setAddError("Name and price are required.");
+      return;
+    }
+    setAddError(null);
+    try {
+      const creator = isSpa ? createSpaService : createMenuItem;
+      await creator({
+        name: newItem.name.trim(),
+        category: newItem.category.trim() || "Other",
+        price: Number(newItem.price),
+        description: newItem.description.trim(),
+        ...(isSpa
+          ? { durationMin: newItem.durationMin ? Number(newItem.durationMin) : undefined }
+          : { vegetarian: newItem.vegetarian }),
+      });
+      setNewItem(EMPTY_DRAFT);
+      setIsAdding(false);
+      load();
+    } catch (err) {
+      setAddError(err.message);
+    }
+  };
+
   if (error) return <p className="text-sm text-red-600">{error}</p>;
   if (!rows) return <LoadingSpinner size="lg" />;
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-brand-100 bg-white">
-      <table className="w-full min-w-[600px] text-left text-sm">
-        <thead>
-          <tr className="border-b border-brand-100 text-xs uppercase text-navy-950/50">
-            <th className="px-4 py-3">Name</th>
-            <th className="px-4 py-3">Category</th>
-            {isSpa ? <th className="px-4 py-3">Duration</th> : <th className="px-4 py-3">Veg</th>}
-            <th className="px-4 py-3">Price</th>
-            <th className="px-4 py-3">Status</th>
-            <th className="px-4 py-3"></th>
-          </tr>
-        </thead>
-        <tbody>
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => setIsAdding((v) => !v)}
+          className="rounded-full bg-brand-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-500"
+        >
+          {isAdding ? "Cancel" : `+ Add ${isSpa ? "Service" : "Item"}`}
+        </button>
+      </div>
+
+      {isAdding && (
+        <form
+          onSubmit={submitNewItem}
+          className="flex flex-col gap-3 rounded-xl border border-brand-100 bg-white p-4 sm:flex-row sm:flex-wrap sm:items-end"
+        >
+          <div className="flex-1 min-w-[140px]">
+            <label className="mb-1 block text-xs font-medium text-navy-950/70">Name</label>
+            <input
+              value={newItem.name}
+              onChange={(e) => setNewItem((d) => ({ ...d, name: e.target.value }))}
+              className="w-full rounded-lg border border-brand-200 px-3 py-2 text-sm"
+              placeholder={isSpa ? "e.g. Deep Tissue Massage" : "e.g. Paneer Tikka"}
+            />
+          </div>
+          <div className="min-w-[120px]">
+            <label className="mb-1 block text-xs font-medium text-navy-950/70">Category</label>
+            <input
+              value={newItem.category}
+              onChange={(e) => setNewItem((d) => ({ ...d, category: e.target.value }))}
+              className="w-full rounded-lg border border-brand-200 px-3 py-2 text-sm"
+              placeholder={isSpa ? "Massage" : "Mains"}
+            />
+          </div>
+          {isSpa ? (
+            <div className="w-24">
+              <label className="mb-1 block text-xs font-medium text-navy-950/70">Duration (min)</label>
+              <input
+                type="number"
+                value={newItem.durationMin}
+                onChange={(e) => setNewItem((d) => ({ ...d, durationMin: e.target.value }))}
+                className="w-full rounded-lg border border-brand-200 px-3 py-2 text-sm"
+              />
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 pb-2">
+              <input
+                type="checkbox"
+                id="newItemVeg"
+                checked={newItem.vegetarian}
+                onChange={(e) => setNewItem((d) => ({ ...d, vegetarian: e.target.checked }))}
+              />
+              <label htmlFor="newItemVeg" className="text-sm text-navy-950/70">Vegetarian</label>
+            </div>
+          )}
+          <div className="w-24">
+            <label className="mb-1 block text-xs font-medium text-navy-950/70">Price (₹)</label>
+            <input
+              type="number"
+              value={newItem.price}
+              onChange={(e) => setNewItem((d) => ({ ...d, price: e.target.value }))}
+              className="w-full rounded-lg border border-brand-200 px-3 py-2 text-sm"
+            />
+          </div>
+          <div className="flex-1 min-w-[160px]">
+            <label className="mb-1 block text-xs font-medium text-navy-950/70">Description</label>
+            <input
+              value={newItem.description}
+              onChange={(e) => setNewItem((d) => ({ ...d, description: e.target.value }))}
+              className="w-full rounded-lg border border-brand-200 px-3 py-2 text-sm"
+              placeholder="Optional"
+            />
+          </div>
+          <button
+            type="submit"
+            className="rounded-full bg-navy-900 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-navy-800"
+          >
+            Save
+          </button>
+          {addError && <p className="w-full text-xs text-red-600">{addError}</p>}
+        </form>
+      )}
+
+      <div className="overflow-x-auto rounded-xl border border-brand-100 bg-white">
+        <table className="w-full min-w-[600px] text-left text-sm">
+          <thead>
+            <tr className="border-b border-brand-100 text-xs uppercase text-navy-950/50">
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Category</th>
+              {isSpa ? <th className="px-4 py-3">Duration</th> : <th className="px-4 py-3">Veg</th>}
+              <th className="px-4 py-3">Price</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
           {rows.map((row) => {
             const isEditing = editingId === row.id;
             return (
@@ -147,9 +263,10 @@ export default function MenuManagement({ type }) {
               </tr>
             );
           })}
-        </tbody>
-      </table>
-      {rows.length === 0 && <p className="px-4 py-6 text-center text-sm text-navy-950/50">No items yet.</p>}
+          </tbody>
+        </table>
+        {rows.length === 0 && <p className="px-4 py-6 text-center text-sm text-navy-950/50">No items yet.</p>}
+      </div>
     </div>
   );
 }

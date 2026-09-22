@@ -23,18 +23,6 @@ export async function sendChatMessage(sessionId, message) {
   return handleResponse(res);
 }
 
-export async function sendVoiceMessage(sessionId, audioBlob) {
-  const formData = new FormData();
-  formData.append("sessionId", sessionId);
-  formData.append("audio", audioBlob, "recording.wav");
-
-  const res = await fetch(`${BASE_URL}/voice`, {
-    method: "POST",
-    body: formData,
-  });
-  return handleResponse(res);
-}
-
 export async function fetchMenu() {
   const res = await fetch(`${BASE_URL}/menu`);
   return handleResponse(res);
@@ -56,6 +44,18 @@ export async function uploadMenuFile(file, type) {
   formData.append("type", type);
 
   const res = await fetch(`${BASE_URL}/admin/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  return handleResponse(res);
+}
+
+export async function uploadExcelFile(file, type) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("type", type);
+
+  const res = await fetch(`${BASE_URL}/admin/upload-excel`, {
     method: "POST",
     body: formData,
   });
@@ -93,6 +93,15 @@ export async function fetchAdminMenuItems() {
   return handleResponse(res);
 }
 
+export async function createMenuItem(data) {
+  const res = await fetch(`${BASE_URL}/admin/menu-items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return handleResponse(res);
+}
+
 export async function updateMenuItem(id, data) {
   const res = await fetch(`${BASE_URL}/admin/menu-items/${id}`, {
     method: "PATCH",
@@ -104,6 +113,15 @@ export async function updateMenuItem(id, data) {
 
 export async function fetchAdminSpaServices() {
   const res = await fetch(`${BASE_URL}/admin/spa-services`);
+  return handleResponse(res);
+}
+
+export async function createSpaService(data) {
+  const res = await fetch(`${BASE_URL}/admin/spa-services`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
   return handleResponse(res);
 }
 

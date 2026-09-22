@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { toolDeclarations, executeTool } from "./tools.js";
-import { logMessage, getOrCreateSession } from "./db.js";
+import { logMessage, getOrCreateSession, prisma } from "./db.js";
 
 const AZURE_ENDPOINT = process.env.AZURE_OPENAI_REALTIME_ENDPOINT;
 const AZURE_API_KEY = process.env.AZURE_OPENAI_REALTIME_API_KEY;
@@ -95,7 +95,8 @@ export function attachRealtimeProxy(httpServer) {
       let event;
       try {
         event = JSON.parse(raw.toString());
-      } catch {
+      } catch (err) {
+        console.error("Failed to parse Azure event:", err.message);
         return;
       }
 
@@ -107,6 +108,7 @@ export function attachRealtimeProxy(httpServer) {
         case "conversation.item.input_audio_transcription.completed":
           if (event.transcript) {
             await logMessage(sessionId, "user", event.transcript);
+            await prisma.voiceLog.create({ data: { sessionId, transcript: event.transcript } });
             clientWs.send(JSON.stringify({ type: "transcript", role: "user", text: event.transcript }));
           }
           break;
@@ -120,18 +122,25 @@ export function attachRealtimeProxy(httpServer) {
 
         case "response.function_call_arguments.done": {
           const { call_id, name, arguments: argsJson } = event;
+
           let args = {};
           try {
             args = JSON.parse(argsJson || "{}");
-          } catch {
-            // leave args empty if malformed
+          } catch (parseErr) {
+            console.error(`[Realtime] Failed to parse function call args for ${name}:`, parseErr.message);
           }
 
           const result = await executeTool(name, args, { sessionId });
+
           if (result.cartAction) uiHints.cartActions.push(result.cartAction);
           if (result.orderId) uiHints.orderId = result.orderId;
-          if (name === "search_menu" && result.items) uiHints.itemsTable = { type: "menu", items: result.items };
-          if (name === "search_spa" && result.services) uiHints.itemsTable = { type: "spa", items: result.services };
+          if (name === "search_menu" && result.items) {
+            uiHints.itemsTable = { type: "menu", items: result.items };
+          }
+          if (name === "search_spa" && result.services) {
+            uiHints.itemsTable = { type: "spa", items: result.services };
+          }
+
           flushUiHints();
 
           azureWs.send(
@@ -159,7 +168,7 @@ export function attachRealtimeProxy(httpServer) {
     });
 
     azureWs.on("error", (err) => {
-      console.error("Azure Realtime connection error:", err.message);
+      console.error("[Realtime] Azure Realtime connection error:", err.message);
       try {
         clientWs.send(JSON.stringify({ type: "error", message: "Could not connect to the voice service." }));
       } catch {

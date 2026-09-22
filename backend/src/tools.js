@@ -11,6 +11,7 @@ export const toolDeclarations = [
         category: { type: "string", description: "Filter by category, e.g. Starters, Mains, Desserts, Beverages." },
         vegetarian: { type: "boolean", description: "true for vegetarian-only, false for non-vegetarian-only." },
       },
+      required: [],
     },
   },
   {
@@ -22,6 +23,7 @@ export const toolDeclarations = [
         query: { type: "string", description: "Free-text search term to match against service names/descriptions." },
         category: { type: "string", description: "Filter by category, e.g. Massage, Skincare." },
       },
+      required: [],
     },
   },
   {

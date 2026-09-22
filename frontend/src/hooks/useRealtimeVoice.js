@@ -6,6 +6,7 @@ export function useRealtimeVoice({ onTranscript, onUiHints } = {}) {
   const [sessionId] = useState(getSessionId);
   const [status, setStatus] = useState("idle"); // idle | connecting | connected | speaking | error
   const [error, setError] = useState(null);
+  const pendingUiHintsRef = useRef(null);
 
   const wsRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -83,13 +84,17 @@ export function useRealtimeVoice({ onTranscript, onUiHints } = {}) {
             break;
           case "transcript":
             onTranscript?.(msg.role, msg.text);
+            if (msg.role === "assistant" && pendingUiHintsRef.current) {
+              onUiHints?.(pendingUiHintsRef.current);
+              pendingUiHintsRef.current = null;
+            }
             break;
           case "audio_delta":
             playbackRef.current?.enqueue(msg.audio);
             setStatus("speaking");
             break;
           case "ui_hints":
-            onUiHints?.(msg.uiHints);
+            pendingUiHintsRef.current = msg.uiHints;
             break;
           case "error":
             setError(msg.message);

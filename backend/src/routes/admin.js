@@ -2,6 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import { prisma, DEFAULT_HOTEL_ID } from "../db.js";
 import { extractItemsFromFile, describeGeminiError } from "../gemini.js";
+import { parseSpreadsheet } from "../excelImport.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const router = Router();
@@ -30,6 +31,37 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     console.error("Upload error:", err);
     const { httpStatus, message } = describeGeminiError(err);
     res.status(httpStatus).json({ error: message });
+  }
+});
+
+router.post("/upload-excel", upload.single("file"), async (req, res) => {
+  try {
+    const { type } = req.body;
+    if (!req.file || !type || !["menu", "spa"].includes(type)) {
+      return res.status(400).json({ error: "A spreadsheet file and a type ('menu' or 'spa') are required." });
+    }
+
+    const items = await parseSpreadsheet(req.file.buffer, type);
+    if (items.length === 0) {
+      return res.status(400).json({
+        error: "No valid rows found. Make sure the sheet has a header row with 'name' and 'price' columns.",
+      });
+    }
+
+    const uploadRecord = await prisma.upload.create({
+      data: {
+        hotelId: DEFAULT_HOTEL_ID,
+        type,
+        fileName: req.file.originalname,
+        status: "pending_review",
+        rawExtractionJson: JSON.stringify({ items }),
+      },
+    });
+
+    res.json({ upload: uploadRecord, extraction: { items } });
+  } catch (err) {
+    console.error("Excel upload error:", err);
+    res.status(500).json({ error: "Failed to read the spreadsheet. Make sure it's a valid .xlsx file." });
   }
 });
 
@@ -112,6 +144,24 @@ router.get("/menu-items", async (req, res) => {
   res.json({ items });
 });
 
+router.post("/menu-items", async (req, res) => {
+  const { name, category, vegetarian, price, description } = req.body;
+  if (!name || price === undefined || price === null || price === "") {
+    return res.status(400).json({ error: "Name and price are required." });
+  }
+  const item = await prisma.menuItem.create({
+    data: {
+      hotelId: DEFAULT_HOTEL_ID,
+      name,
+      category: category || "Other",
+      vegetarian: !!vegetarian,
+      price: Number(price) || 0,
+      description: description || "",
+    },
+  });
+  res.json({ item });
+});
+
 router.patch("/menu-items/:id", async (req, res) => {
   const { name, category, vegetarian, price, description, isActive } = req.body;
   const item = await prisma.menuItem.update({
@@ -127,6 +177,24 @@ router.get("/spa-services", async (req, res) => {
     orderBy: [{ category: "asc" }, { name: "asc" }],
   });
   res.json({ services });
+});
+
+router.post("/spa-services", async (req, res) => {
+  const { name, category, durationMin, price, description } = req.body;
+  if (!name || price === undefined || price === null || price === "") {
+    return res.status(400).json({ error: "Name and price are required." });
+  }
+  const service = await prisma.spaService.create({
+    data: {
+      hotelId: DEFAULT_HOTEL_ID,
+      name,
+      category: category || "Other",
+      durationMin: durationMin ? Number(durationMin) : null,
+      price: Number(price) || 0,
+      description: description || "",
+    },
+  });
+  res.json({ service });
 });
 
 router.patch("/spa-services/:id", async (req, res) => {
