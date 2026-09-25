@@ -1,17 +1,28 @@
 import { useEffect, useState } from "react";
 import Header from "../components/Header.jsx";
+import AdminLoginGate from "../components/AdminLoginGate.jsx";
 import LoadingSpinner from "../components/LoadingSpinner.jsx";
 import UploadForm from "../components/UploadForm.jsx";
 import ReviewModal from "../components/ReviewModal.jsx";
 import MenuManagement from "../components/MenuManagement.jsx";
+import RoomsManagement from "../components/RoomsManagement.jsx";
 import OrdersTable from "../components/OrdersTable.jsx";
+import FulfillmentBoard from "../components/FulfillmentBoard.jsx";
+import TokenUsage from "../components/TokenUsage.jsx";
+import FrontDeskAlerts from "../components/FrontDeskAlerts.jsx";
 import { fetchUploads } from "../services/api.js";
 
 const TABS = [
   { id: "uploads", label: "Uploads" },
+  { id: "rooms", label: "Rooms" },
   { id: "menu", label: "Menu" },
   { id: "spa", label: "Spa Services" },
+  { id: "housekeeping", label: "Housekeeping" },
+  { id: "library", label: "Library" },
   { id: "orders", label: "Orders" },
+  { id: "fulfillment", label: "Fulfillment" },
+  { id: "frontdesk", label: "Front Desk" },
+  { id: "usage", label: "Usage" },
 ];
 
 function UploadsTab() {
@@ -110,33 +121,41 @@ export default function AdminPage() {
   const [activeTab, setActiveTab] = useState("uploads");
 
   return (
-    <div className="min-h-screen bg-brand-50">
-      <Header />
-      <main className="mx-auto max-w-6xl px-4 py-6">
-        <h1 className="mb-4 font-serif text-2xl font-bold text-navy-950">Admin Dashboard</h1>
+    <AdminLoginGate>
+      <div className="min-h-screen bg-brand-50">
+        <Header />
+        <main className="mx-auto max-w-6xl px-4 py-6">
+          <h1 className="mb-4 font-serif text-2xl font-bold text-navy-950">Admin Dashboard</h1>
 
-        <div className="mb-6 flex gap-1 border-b border-brand-100">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-2 text-sm font-medium transition-colors ${
-                activeTab === tab.id
-                  ? "border-b-2 border-brand-600 text-brand-600"
-                  : "text-navy-950/60 hover:text-navy-950"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+          <div className="mb-6 flex gap-1 border-b border-brand-100">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-4 py-2 text-sm font-medium transition-colors ${
+                  activeTab === tab.id
+                    ? "border-b-2 border-brand-600 text-brand-600"
+                    : "text-navy-950/60 hover:text-navy-950"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
-        {activeTab === "uploads" && <UploadsTab />}
-        {activeTab === "menu" && <MenuManagement type="menu" />}
-        {activeTab === "spa" && <MenuManagement type="spa" />}
-        {activeTab === "orders" && <OrdersTable />}
-      </main>
-    </div>
+          {activeTab === "uploads" && <UploadsTab />}
+          {activeTab === "rooms" && <RoomsManagement />}
+          {activeTab === "menu" && <MenuManagement type="menu" />}
+          {activeTab === "spa" && <MenuManagement type="spa" />}
+          {activeTab === "housekeeping" && <MenuManagement type="housekeeping" />}
+          {activeTab === "library" && <MenuManagement type="library" />}
+          {activeTab === "orders" && <OrdersTable />}
+          {activeTab === "fulfillment" && <FulfillmentBoard />}
+          {activeTab === "frontdesk" && <FrontDeskAlerts />}
+          {activeTab === "usage" && <TokenUsage />}
+        </main>
+      </div>
+    </AdminLoginGate>
   );
 }

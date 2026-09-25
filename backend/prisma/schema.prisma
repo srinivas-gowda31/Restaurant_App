@@ -12,11 +12,30 @@ model Hotel {
   name      String
   createdAt DateTime @default(now())
 
-  menuItems    MenuItem[]
-  spaServices  SpaService[]
-  uploads      Upload[]
-  sessions     Session[]
-  orders       Order[]
+  menuItems         MenuItem[]
+  spaServices       SpaService[]
+  housekeepingItems HousekeepingItem[]
+  libraryItems      LibraryItem[]
+  uploads           Upload[]
+  sessions          Session[]
+  orders            Order[]
+  tokenUsages       TokenUsage[]
+  frontDeskAlerts   FrontDeskAlert[]
+  rooms             Room[]
+}
+
+model Room {
+  id         String   @id @default(cuid())
+  hotelId    String
+  number     String
+  guestName  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  hotel Hotel @relation(fields: [hotelId], references: [id])
+
+  @@unique([hotelId, number])
+  @@index([hotelId])
 }
 
 model MenuItem {
@@ -55,6 +74,41 @@ model SpaService {
   @@index([hotelId])
 }
 
+model HousekeepingItem {
+  id          String   @id @default(cuid())
+  hotelId     String
+  name        String
+  category    String
+  price       Float
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  hotel      Hotel       @relation(fields: [hotelId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([hotelId])
+}
+
+model LibraryItem {
+  id          String   @id @default(cuid())
+  hotelId     String
+  name        String
+  category    String
+  author      String?
+  price       Float    @default(0)
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  hotel      Hotel       @relation(fields: [hotelId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([hotelId])
+}
+
 model Upload {
   id                String   @id @default(cuid())
   hotelId           String
@@ -71,14 +125,18 @@ model Upload {
 }
 
 model Session {
-  id        String   @id
-  hotelId   String
-  createdAt DateTime @default(now())
+  id         String   @id
+  hotelId    String
+  roomNumber String?
+  guestName  String?
+  createdAt  DateTime @default(now())
 
-  hotel    Hotel         @relation(fields: [hotelId], references: [id])
-  messages ChatMessage[]
-  voiceLogs VoiceLog[]
-  orders    Order[]
+  hotel      Hotel         @relation(fields: [hotelId], references: [id])
+  messages   ChatMessage[]
+  voiceLogs  VoiceLog[]
+  orders     Order[]
+  tokenUsages TokenUsage[]
+  frontDeskAlerts FrontDeskAlert[]
 }
 
 model ChatMessage {
@@ -123,17 +181,115 @@ model Order {
 }
 
 model OrderItem {
-  id           String  @id @default(cuid())
-  orderId      String
-  menuItemId   String?
-  spaServiceId String?
-  name         String
-  quantity     Int     @default(1)
-  unitPrice    Float
+  id                 String  @id @default(cuid())
+  orderId            String
+  menuItemId         String?
+  spaServiceId       String?
+  housekeepingItemId String?
+  libraryItemId      String?
+  department         String  @default("kitchen")
+  name               String
+  quantity           Int     @default(1)
+  unitPrice          Float
 
-  order      Order       @relation(fields: [orderId], references: [id])
-  menuItem   MenuItem?   @relation(fields: [menuItemId], references: [id])
-  spaService SpaService? @relation(fields: [spaServiceId], references: [id])
+  order            Order             @relation(fields: [orderId], references: [id])
+  menuItem         MenuItem?         @relation(fields: [menuItemId], references: [id])
+  spaService       SpaService?       @relation(fields: [spaServiceId], references: [id])
+  housekeepingItem HousekeepingItem? @relation(fields: [housekeepingItemId], references: [id])
+  libraryItem      LibraryItem?      @relation(fields: [libraryItemId], references: [id])
+
+  @@index([orderId])
+}
+
+model KitchenTicket {
+  id         String   @id @default(cuid())
+  orderId    String
+  orderItemId String  @unique
+  itemName   String
+  quantity   Int
+  roomNumber String?
+  status     String   @default("pending")
+  createdAt  DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model HousekeepingRequest {
+  id          String   @id @default(cuid())
+  orderId     String
+  orderItemId String   @unique
+  itemName    String
+  quantity    Int
+  roomNumber  String?
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model SpaBooking {
+  id          String   @id @default(cuid())
+  orderId     String
+  orderItemId String   @unique
+  itemName    String
+  quantity    Int
+  roomNumber  String?
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model TokenUsage {
+  id               String   @id @default(cuid())
+  hotelId          String
+  sessionId        String
+  // Distinguishes one voice call (one WebSocket connection) from another within the
+  // same persistent guest sessionId, so "conversations" in usage stats means "calls",
+  // not "this guest's entire visit". Null for text chat, where sessionId already is
+  // the right grouping (no separate call boundary exists).
+  callId           String?
+  source           String // "chat" | "voice"
+  model            String?
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  hotel   Hotel   @relation(fields: [hotelId], references: [id])
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([hotelId])
+  @@index([callId])
+  @@index([sessionId])
+}
+
+model FrontDeskAlert {
+  id         String   @id @default(cuid())
+  hotelId    String
+  sessionId  String
+  issue      String
+  roomNumber String?
+  urgency    String   @default("normal") // "normal" | "urgent"
+  status     String   @default("open") // "open" | "acknowledged" | "resolved"
+  createdAt  DateTime @default(now())
+
+  hotel   Hotel   @relation(fields: [hotelId], references: [id])
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([hotelId])
+  @@index([sessionId])
+}
+
+model LibraryRequest {
+  id          String   @id @default(cuid())
+  orderId     String
+  orderItemId String   @unique
+  itemName    String
+  quantity    Int
+  roomNumber  String?
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
 
   @@index([orderId])
 }

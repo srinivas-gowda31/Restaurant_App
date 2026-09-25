@@ -35,6 +35,27 @@ async function main() {
     await prisma.spaService.create({ data: { ...service, hotelId: hotel.id } });
   }
 
+  const rooms = [
+    { number: "101", guestName: "Rahul Sharma" },
+    { number: "102", guestName: "Priya Singh" },
+    { number: "103", guestName: "Aditya Verma" },
+    { number: "104", guestName: "Sneha Reddy" },
+    { number: "105", guestName: "Karan Mehta" },
+    { number: "201", guestName: "Ananya Iyer" },
+    { number: "202", guestName: "Vikram Nair" },
+    { number: "203", guestName: "Meera Joshi" },
+    { number: "204", guestName: "Arjun Kapoor" },
+    { number: "205", guestName: "Divya Rao" },
+  ];
+
+  for (const room of rooms) {
+    await prisma.room.upsert({
+      where: { hotelId_number: { hotelId: hotel.id, number: room.number } },
+      update: { guestName: room.guestName },
+      create: { ...room, hotelId: hotel.id },
+    });
+  }
+
   console.log("Seed complete.");
 }
 

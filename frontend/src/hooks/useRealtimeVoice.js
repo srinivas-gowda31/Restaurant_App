@@ -1,8 +1,8 @@
 import { useCallback, useRef, useState } from "react";
 import { getSessionId } from "./useSessionId.js";
-import { REALTIME_SAMPLE_RATE, floatTo16BitPCM, arrayBufferToBase64, RealtimePlaybackQueue } from "../utils/realtimeAudio.js";
+import { REALTIME_SAMPLE_RATE, arrayBufferToBase64, RealtimePlaybackQueue } from "../utils/realtimeAudio.js";
 
-export function useRealtimeVoice({ onTranscript, onUiHints } = {}) {
+export function useRealtimeVoice({ onTranscript, onUiHints, guestContext } = {}) {
   const [sessionId] = useState(getSessionId);
   const [status, setStatus] = useState("idle"); // idle | connecting | connected | speaking | error
   const [error, setError] = useState(null);
@@ -11,19 +11,23 @@ export function useRealtimeVoice({ onTranscript, onUiHints } = {}) {
   const wsRef = useRef(null);
   const audioContextRef = useRef(null);
   const streamRef = useRef(null);
-  const processorRef = useRef(null);
+  const workletNodeRef = useRef(null);
   const sourceNodeRef = useRef(null);
+  const playbackNodeRef = useRef(null);
   const playbackRef = useRef(null);
 
   const cleanup = useCallback(() => {
-    processorRef.current?.disconnect();
+    workletNodeRef.current?.port.close();
+    workletNodeRef.current?.disconnect();
     sourceNodeRef.current?.disconnect();
+    playbackNodeRef.current?.port.close();
+    playbackNodeRef.current?.disconnect();
     streamRef.current?.getTracks().forEach((t) => t.stop());
-    playbackRef.current?.clear();
     audioContextRef.current?.close().catch(() => {});
 
-    processorRef.current = null;
+    workletNodeRef.current = null;
     sourceNodeRef.current = null;
+    playbackNodeRef.current = null;
     streamRef.current = null;
     audioContextRef.current = null;
     playbackRef.current = null;
@@ -41,33 +45,59 @@ export function useRealtimeVoice({ onTranscript, onUiHints } = {}) {
     setStatus("connecting");
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // autoGainControl/noiseSuppression have a brief calibration ramp-up on many
+      // browsers — the first moment of speech can come out attenuated/distorted while
+      // they settle, which reads as "the mic doesn't detect me right away." Echo
+      // cancellation alone (no ramp-up) is enough for a phone-style single-speaker call.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, autoGainControl: false, noiseSuppression: false },
+      });
       streamRef.current = stream;
 
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       const audioContext = new AudioContextClass({ sampleRate: REALTIME_SAMPLE_RATE });
       audioContextRef.current = audioContext;
-      playbackRef.current = new RealtimePlaybackQueue(audioContext);
+      // Runs PCM capture/playback on the dedicated audio thread instead of the main thread
+      // (what ScriptProcessorNode, and chained AudioBufferSourceNodes, did) — main-thread
+      // contention and per-chunk node boundaries were the likely causes of choppy audio.
+      await Promise.all([
+        audioContext.audioWorklet.addModule("/pcm-worklet.js"),
+        audioContext.audioWorklet.addModule("/pcm-playback-worklet.js"),
+      ]);
+
+      const playbackNode = new AudioWorkletNode(audioContext, "pcm-playback-processor", {
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      playbackNode.connect(audioContext.destination);
+      playbackNodeRef.current = playbackNode;
+      playbackRef.current = new RealtimePlaybackQueue(playbackNode);
 
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${proto}//${window.location.host}/api/realtime?sessionId=${sessionId}`);
+      const params = new URLSearchParams({ sessionId });
+      if (guestContext?.roomNumber) params.set("room", guestContext.roomNumber);
+      if (guestContext?.guestName) params.set("guest", guestContext.guestName);
+      const ws = new WebSocket(`${proto}//${window.location.host}/api/realtime?${params.toString()}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
         const source = audioContext.createMediaStreamSource(stream);
-        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        const workletNode = new AudioWorkletNode(audioContext, "pcm-capture-processor");
         sourceNodeRef.current = source;
-        processorRef.current = processor;
+        workletNodeRef.current = workletNode;
 
-        processor.onaudioprocess = (e) => {
+        workletNode.port.onmessage = (e) => {
           if (ws.readyState !== WebSocket.OPEN) return;
-          const input = e.inputBuffer.getChannelData(0);
-          const pcm = floatTo16BitPCM(input);
-          ws.send(JSON.stringify({ type: "input_audio", audio: arrayBufferToBase64(pcm) }));
+          ws.send(JSON.stringify({ type: "input_audio", audio: arrayBufferToBase64(e.data) }));
         };
 
-        source.connect(processor);
-        processor.connect(audioContext.destination);
+        source.connect(workletNode);
+
+        // The mic is fully live at this point — don't make the guest stare at "Connecting…"
+        // for the few extra seconds the backend needs to separately open and confirm its own
+        // connection to Azure. Any audio sent before that finishes is harmlessly dropped
+        // server-side, and the auto-greeting means the guest isn't expected to speak yet anyway.
+        setStatus("connected");
       };
 
       ws.onmessage = (event) => {
@@ -119,7 +149,7 @@ export function useRealtimeVoice({ onTranscript, onUiHints } = {}) {
       setStatus("error");
       cleanup();
     }
-  }, [sessionId, onTranscript, onUiHints, cleanup]);
+  }, [sessionId, onTranscript, onUiHints, cleanup, guestContext]);
 
   return { status, error, start, stop, isActive: status !== "idle" && status !== "error" };
 }

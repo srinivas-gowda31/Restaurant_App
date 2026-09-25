@@ -1,4 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
+import { MENU_CATEGORIES } from "./menuCategories.js";
+import { EXTRACTION_INSTRUCTIONS } from "./extractionInstructions.js";
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) {
@@ -7,8 +9,8 @@ if (!apiKey) {
 
 const ai = new GoogleGenAI({ apiKey });
 
-const CHAT_MODEL = process.env.GEMINI_MODEL_CHAT || "gemini-2.5-flash";
-const EXTRACT_MODEL = process.env.GEMINI_MODEL_EXTRACT || "gemini-2.5-pro";
+export const CHAT_MODEL = process.env.GEMINI_MODEL_CHAT || "gemini-3.6-flash";
+const EXTRACT_MODEL = process.env.GEMINI_MODEL_EXTRACT || "gemini-3.1-pro-preview";
 const TTS_MODEL = process.env.GEMINI_MODEL_TTS || "gemini-2.5-flash-preview-tts";
 
 /**
@@ -71,33 +73,36 @@ export async function synthesizeSpeech(text) {
   return pcmToWav(part.inlineData.data, { sampleRate: 24000 });
 }
 
-const EXTRACTION_SCHEMA = {
-  type: "object",
-  properties: {
-    items: {
-      type: "array",
+function buildExtractionSchema(type) {
+  const categorySchema =
+    type === "menu" ? { type: "string", enum: MENU_CATEGORIES } : { type: "string" };
+
+  return {
+    type: "object",
+    properties: {
       items: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          category: { type: "string" },
-          vegetarian: { type: "boolean" },
-          price: { type: "number" },
-          description: { type: "string" },
-          durationMin: { type: "number" },
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            category: categorySchema,
+            vegetarian: { type: "boolean" },
+            price: { type: "number" },
+            description: { type: "string" },
+            durationMin: { type: "number" },
+            author: { type: "string" },
+          },
+          required: ["name", "category", "price"],
         },
-        required: ["name", "category", "price"],
       },
     },
-  },
-  required: ["items"],
-};
+    required: ["items"],
+  };
+}
 
 export async function extractItemsFromFile(fileBuffer, mimeType, type) {
-  const instructions =
-    type === "spa"
-      ? "Extract all spa/wellness services from this document. For each: name, category (e.g. Massage, Skincare), price (number, no currency symbols), durationMin (minutes, if listed), and a short description."
-      : "Extract all food and beverage menu items from this document. For each: name, category (e.g. Starters, Mains, Desserts, Beverages), vegetarian (true/false), price (number, no currency symbols), and a short description.";
+  const instructions = EXTRACTION_INSTRUCTIONS[type] || EXTRACTION_INSTRUCTIONS.menu;
 
   const response = await ai.models.generateContent({
     model: EXTRACT_MODEL,
@@ -112,7 +117,35 @@ export async function extractItemsFromFile(fileBuffer, mimeType, type) {
     ],
     config: {
       responseMimeType: "application/json",
-      responseSchema: EXTRACTION_SCHEMA,
+      responseSchema: buildExtractionSchema(type),
+    },
+  });
+
+  try {
+    return JSON.parse(response.text);
+  } catch (err) {
+    throw new Error("Failed to parse extraction result: " + err.message);
+  }
+}
+
+// Structures already-OCR'd plain text into the catalog schema, using the cheaper/higher-quota
+// chat model instead of EXTRACT_MODEL — there's no image here, just text, so the pro-preview
+// model buys nothing. Used by the local-OCR extraction path, which does its own OCR outside
+// Gemini and only needs this to turn raw text into structured items.
+export async function structureExtractedText(text, type) {
+  const instructions = EXTRACTION_INSTRUCTIONS[type] || EXTRACTION_INSTRUCTIONS.menu;
+
+  const response = await ai.models.generateContent({
+    model: CHAT_MODEL,
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: `${instructions}\n\nDocument text (from OCR, may contain minor errors):\n${text}` }],
+      },
+    ],
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: buildExtractionSchema(type),
     },
   });
 
@@ -142,13 +175,31 @@ export function describeGeminiError(err) {
   };
 }
 
+const RETRYABLE_STATUS = new Set([429, 503]);
+const MAX_RETRIES = 2;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function generateWithTools({ systemInstruction, contents, tools }) {
-  return ai.models.generateContent({
-    model: CHAT_MODEL,
-    contents,
-    config: {
-      systemInstruction,
-      tools: tools ? [{ functionDeclarations: tools }] : undefined,
-    },
-  });
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await ai.models.generateContent({
+        model: CHAT_MODEL,
+        contents,
+        config: {
+          systemInstruction,
+          tools: tools ? [{ functionDeclarations: tools }] : undefined,
+        },
+      });
+    } catch (err) {
+      // Gemini's demand spikes (429/503) are usually seconds-long — one or two quick
+      // retries with backoff often succeed rather than failing the guest's whole turn.
+      if (attempt >= MAX_RETRIES || !RETRYABLE_STATUS.has(err?.status)) throw err;
+      attempt += 1;
+      await sleep(300 * 2 ** (attempt - 1));
+    }
+  }
 }

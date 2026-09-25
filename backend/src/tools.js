@@ -1,136 +1,301 @@
+import { Prisma } from "@prisma/client";
 import { prisma, DEFAULT_HOTEL_ID } from "./db.js";
 
 export const toolDeclarations = [
   {
     name: "search_menu",
-    description: "Search the hotel's food and beverage menu items, optionally filtered by category or vegetarian status.",
+    description: "Search food/beverage menu items. Optional category or vegetarian filter.",
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Free-text search term to match against item names/descriptions." },
-        category: { type: "string", description: "Filter by category, e.g. Starters, Mains, Desserts, Beverages." },
-        vegetarian: { type: "boolean", description: "true for vegetarian-only, false for non-vegetarian-only." },
+        query: { type: "string", description: "Free-text term against name/description." },
+        category: { type: "string", description: "e.g. Starters, Mains, Desserts, Beverages." },
+        vegetarian: { type: "boolean", description: "true=veg-only, false=non-veg-only." },
       },
       required: [],
     },
   },
   {
     name: "search_spa",
-    description: "Search the hotel's spa services, optionally filtered by category.",
+    description: "Search spa services. Optional category filter.",
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Free-text search term to match against service names/descriptions." },
-        category: { type: "string", description: "Filter by category, e.g. Massage, Skincare." },
+        query: { type: "string", description: "Free-text term against name/description." },
+        category: { type: "string", description: "e.g. Massage, Skincare." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "search_housekeeping",
+    description: "Search housekeeping/amenity items (water, towels, toiletries, etc.).",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Free-text term against name/description." },
+        category: { type: "string", description: "e.g. Amenities, Linens, Toiletries." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "search_library",
+    description: "Search library books/reading material.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Free-text term against title/author/description." },
+        category: { type: "string", description: "Genre." },
       },
       required: [],
     },
   },
   {
     name: "add_to_order",
-    description: "Add an item (menu or spa) to the guest's current order cart.",
+    description:
+      "Add an item to the cart. Returns the updated cart+total — quote that total verbatim to the guest, never compute it yourself.",
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Exact name of the item to add." },
-        quantity: { type: "number", description: "Quantity to add. Defaults to 1." },
+        name: { type: "string", description: "Exact item name." },
+        quantity: { type: "number", description: "Defaults to 1." },
       },
       required: ["name"],
     },
   },
   {
     name: "remove_from_order",
-    description: "Remove an item from the guest's current order cart.",
+    description: "Remove an item from the cart. Returns the updated cart+total — quote it verbatim, never compute it yourself.",
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Exact name of the item to remove." },
+        name: { type: "string", description: "Exact item name." },
       },
       required: ["name"],
     },
   },
   {
+    name: "get_cart",
+    description: "Look up the current cart+total server-side. Call if unsure (e.g. guest asks to hear it back) instead of relying on memory.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
     name: "confirm_order",
-    description: "Finalize and confirm the guest's order, persisting it to the database. Only call this after the guest explicitly confirms.",
+    description:
+      "Finalize the current cart (tracked automatically — do not pass items) and persist it. Call only after the " +
+      "guest explicitly confirms and you have their room number (ask first if you don't — staff need it to route the request).",
     parameters: {
       type: "object",
       properties: {
-        items: {
-          type: "array",
-          description: "The full list of items in the order being confirmed.",
-          items: {
-            type: "object",
-            properties: {
-              name: { type: "string" },
-              quantity: { type: "number" },
-              unitPrice: { type: "number" },
-            },
-            required: ["name", "quantity", "unitPrice"],
-          },
-        },
         guestName: { type: "string" },
-        roomNumber: { type: "string" },
+        roomNumber: { type: "string", description: "Required." },
       },
-      required: ["items"],
+      required: ["roomNumber"],
+    },
+  },
+  {
+    name: "notify_front_desk",
+    description:
+      "Alert staff about anything outside a catalog order — complaint, facility issue (AC/plumbing/Wi-Fi), wanting " +
+      "a manager, safety concern, etc. Use instead of forcing it through search/order tools.",
+    parameters: {
+      type: "object",
+      properties: {
+        issue: { type: "string", description: "Concise summary of what staff need to handle." },
+        roomNumber: { type: "string", description: "If already given." },
+        urgent: { type: "boolean", description: "true for immediate attention (e.g. safety)." },
+      },
+      required: ["issue"],
     },
   },
 ];
 
-async function searchMenu({ query, category, vegetarian }) {
-  const where = { hotelId: DEFAULT_HOTEL_ID, isActive: true };
-  if (category) where.category = { equals: category, mode: "insensitive" };
-  if (typeof vegetarian === "boolean") where.vegetarian = vegetarian;
-  if (query) where.name = { contains: query, mode: "insensitive" };
+/**
+ * Fuzzy/typo-tolerant catalog search shared by all four catalogs. A free-text query uses
+ * trigram similarity (pg_trgm) so plurals, typos, and imperfect voice transcriptions
+ * ("water bottles" vs. "Water Bottle", "buttar chicken" vs. "Butter Chicken") still find
+ * the right item instead of requiring an exact substring match.
+ */
+async function fuzzyCatalogSearch(tableName, { query, category, extraConditions = [] } = {}) {
+  const trimmedQuery = query?.trim();
+  const table = Prisma.raw(`"${tableName}"`);
+  const conditions = [
+    Prisma.sql`"hotelId" = ${DEFAULT_HOTEL_ID}`,
+    Prisma.sql`"isActive" = true`,
+    ...extraConditions,
+  ];
+  if (category) conditions.push(Prisma.sql`category ILIKE ${category}`);
 
-  const items = await prisma.menuItem.findMany({ where, take: 20 });
+  if (trimmedQuery) {
+    conditions.push(Prisma.sql`(name ILIKE ${"%" + trimmedQuery + "%"} OR similarity(name, ${trimmedQuery}) > 0.2)`);
+    return prisma.$queryRaw(Prisma.sql`
+      SELECT * FROM ${table}
+      WHERE ${Prisma.join(conditions, " AND ")}
+      ORDER BY similarity(name, ${trimmedQuery}) DESC
+      LIMIT 20
+    `);
+  }
+
+  return prisma.$queryRaw(Prisma.sql`
+    SELECT * FROM ${table}
+    WHERE ${Prisma.join(conditions, " AND ")}
+    LIMIT 20
+  `);
+}
+
+async function searchMenu({ query, category, vegetarian }) {
+  const extraConditions = [];
+  if (typeof vegetarian === "boolean") extraConditions.push(Prisma.sql`vegetarian = ${vegetarian}`);
+  const items = await fuzzyCatalogSearch("MenuItem", { query, category, extraConditions });
   return { items };
 }
 
 async function searchSpa({ query, category }) {
-  const where = { hotelId: DEFAULT_HOTEL_ID, isActive: true };
-  if (category) where.category = { equals: category, mode: "insensitive" };
-  if (query) where.name = { contains: query, mode: "insensitive" };
-
-  const services = await prisma.spaService.findMany({ where, take: 20 });
+  const services = await fuzzyCatalogSearch("SpaService", { query, category });
   return { services };
 }
 
-async function resolveItemPrice(name) {
+async function searchHousekeeping({ query, category }) {
+  const items = await fuzzyCatalogSearch("HousekeepingItem", { query, category });
+  return { items };
+}
+
+async function searchLibrary({ query, category }) {
+  const items = await fuzzyCatalogSearch("LibraryItem", { query, category });
+  return { items };
+}
+
+/**
+ * Resolves an item name against every catalog so add/confirm can route it to
+ * the right fulfillment department (kitchen, housekeeping, spa, library).
+ */
+async function resolveItem(name) {
   const menuItem = await prisma.menuItem.findFirst({
-    where: { hotelId: DEFAULT_HOTEL_ID, isActive: true, name: { equals: name } },
+    where: { hotelId: DEFAULT_HOTEL_ID, isActive: true, name: { equals: name, mode: "insensitive" } },
   });
-  if (menuItem) return { unitPrice: menuItem.price, menuItemId: menuItem.id, spaServiceId: null };
+  if (menuItem) return { department: "kitchen", unitPrice: menuItem.price, menuItemId: menuItem.id };
 
   const spaService = await prisma.spaService.findFirst({
-    where: { hotelId: DEFAULT_HOTEL_ID, isActive: true, name: { equals: name } },
+    where: { hotelId: DEFAULT_HOTEL_ID, isActive: true, name: { equals: name, mode: "insensitive" } },
   });
-  if (spaService) return { unitPrice: spaService.price, menuItemId: null, spaServiceId: spaService.id };
+  if (spaService) return { department: "spa", unitPrice: spaService.price, spaServiceId: spaService.id };
+
+  const housekeepingItem = await prisma.housekeepingItem.findFirst({
+    where: { hotelId: DEFAULT_HOTEL_ID, isActive: true, name: { equals: name, mode: "insensitive" } },
+  });
+  if (housekeepingItem) {
+    return { department: "housekeeping", unitPrice: housekeepingItem.price, housekeepingItemId: housekeepingItem.id };
+  }
+
+  const libraryItem = await prisma.libraryItem.findFirst({
+    where: { hotelId: DEFAULT_HOTEL_ID, isActive: true, name: { equals: name, mode: "insensitive" } },
+  });
+  if (libraryItem) return { department: "library", unitPrice: libraryItem.price, libraryItemId: libraryItem.id };
 
   return null;
 }
 
-async function addToOrder({ name, quantity = 1 }) {
-  const resolved = await resolveItemPrice(name);
-  if (!resolved) return { success: false, message: `Could not find an item named "${name}".` };
+// The model was asked to "track the cart yourself" and recite running totals from memory —
+// it kept getting the arithmetic wrong (e.g. summing 3 items as if there were only 2). Cart
+// state now lives here instead, and every add/remove/get returns the authoritative total so
+// the model only ever has to repeat a number back, never compute one. Keyed by sessionId, so
+// it's shared between text and voice within the same guest visit; in-memory like the
+// frontend's own cart, so it doesn't survive a server restart — not a regression from today.
+const cartsBySession = new Map();
+
+function getCart(sessionId) {
+  if (!cartsBySession.has(sessionId)) cartsBySession.set(sessionId, []);
+  return cartsBySession.get(sessionId);
+}
+
+function cartSummary(cart) {
   return {
-    success: true,
-    cartAction: { type: "add", name, quantity, unitPrice: resolved.unitPrice },
+    cart: cart.map((i) => ({ name: i.name, quantity: i.quantity, unitPrice: i.unitPrice })),
+    total: cart.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0),
   };
 }
 
-async function removeFromOrder({ name }) {
+async function addToOrder({ name, quantity = 1 }, sessionId) {
+  const resolved = await resolveItem(name);
+  if (!resolved) return { success: false, message: `Could not find an item named "${name}".` };
+
+  const qty = Number.isFinite(quantity) && quantity > 0 ? Math.floor(quantity) : 1;
+  const cart = getCart(sessionId);
+  const existing = cart.find((i) => i.name.toLowerCase() === name.toLowerCase());
+  if (existing) existing.quantity += qty;
+  else cart.push({ name, quantity: qty, unitPrice: resolved.unitPrice, department: resolved.department });
+
+  return {
+    success: true,
+    cartAction: { type: "add", name, quantity: qty, unitPrice: resolved.unitPrice, department: resolved.department },
+    ...cartSummary(cart),
+  };
+}
+
+async function removeFromOrder({ name }, sessionId) {
+  const cart = getCart(sessionId);
+  const idx = cart.findIndex((i) => i.name.toLowerCase() === name.toLowerCase());
+  if (idx !== -1) cart.splice(idx, 1);
+
   return {
     success: true,
     cartAction: { type: "remove", name },
+    ...cartSummary(cart),
   };
 }
 
-async function confirmOrder({ items, guestName, roomNumber }, sessionId) {
-  if (!items || items.length === 0) {
+async function getCartTool(sessionId) {
+  return { success: true, ...cartSummary(getCart(sessionId)) };
+}
+
+const DEPARTMENT_TABLE = {
+  kitchen: prisma.kitchenTicket,
+  housekeeping: prisma.housekeepingRequest,
+  spa: prisma.spaBooking,
+  library: prisma.libraryRequest,
+};
+
+async function confirmOrder({ guestName, roomNumber }, sessionId) {
+  // The cart the model has been building via add_to_order/remove_from_order is the
+  // authoritative source — not whatever the model might separately claim the order is,
+  // which is exactly what was producing wrong totals when it recomputed from memory.
+  const cart = getCart(sessionId);
+  if (cart.length === 0) {
     return { success: false, message: "Cannot confirm an empty order." };
   }
 
-  const total = items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0);
+  // Fall back to whatever room/guest context the session already carries (e.g. set from a
+  // scanned room QR code) so the guest is never re-asked for details we already have.
+  if (!roomNumber || !guestName) {
+    const session = await prisma.session.findUnique({ where: { id: sessionId } });
+    roomNumber = roomNumber || session?.roomNumber || null;
+    guestName = guestName || session?.guestName || null;
+  }
+
+  if (!roomNumber || !roomNumber.trim()) {
+    return { success: false, message: "Ask the guest for their room number before confirming — it's required so staff know where to deliver." };
+  }
+
+  // Re-resolve each item against the live catalog rather than trusting the cart's cached
+  // unitPrice — a menu price could have changed since it was added — so money/fulfillment
+  // always reflects the current catalog.
+  const resolvedItems = await Promise.all(
+    cart.map(async (i) => {
+      const resolved = await resolveItem(i.name);
+      return { name: i.name, quantity: i.quantity, resolved };
+    })
+  );
+
+  const unresolved = resolvedItems.filter((i) => !i.resolved);
+  if (unresolved.length > 0) {
+    return {
+      success: false,
+      message: `Could not confirm — these items are no longer on the catalog: ${unresolved.map((i) => i.name).join(", ")}. Remove them and try again.`,
+    };
+  }
+
+  const total = resolvedItems.reduce((sum, i) => sum + i.resolved.unitPrice * i.quantity, 0);
 
   const order = await prisma.order.create({
     data: {
@@ -141,22 +306,38 @@ async function confirmOrder({ items, guestName, roomNumber }, sessionId) {
       total,
       status: "confirmed",
       items: {
-        create: await Promise.all(
-          items.map(async (i) => {
-            const resolved = await resolveItemPrice(i.name);
-            return {
-              name: i.name,
-              quantity: i.quantity,
-              unitPrice: i.unitPrice,
-              menuItemId: resolved?.menuItemId || null,
-              spaServiceId: resolved?.spaServiceId || null,
-            };
-          })
-        ),
+        create: resolvedItems.map((i) => ({
+          name: i.name,
+          quantity: i.quantity,
+          unitPrice: i.resolved.unitPrice,
+          department: i.resolved.department,
+          menuItemId: i.resolved.menuItemId || null,
+          spaServiceId: i.resolved.spaServiceId || null,
+          housekeepingItemId: i.resolved.housekeepingItemId || null,
+          libraryItemId: i.resolved.libraryItemId || null,
+        })),
       },
     },
     include: { items: true },
   });
+
+  await Promise.all(
+    order.items.map((orderItem) => {
+      const table = DEPARTMENT_TABLE[orderItem.department] || DEPARTMENT_TABLE.kitchen;
+      return table.create({
+        data: {
+          orderId: order.id,
+          orderItemId: orderItem.id,
+          itemName: orderItem.name,
+          quantity: orderItem.quantity,
+          roomNumber: roomNumber || null,
+          status: "pending",
+        },
+      });
+    })
+  );
+
+  cartsBySession.delete(sessionId);
 
   return {
     success: true,
@@ -166,18 +347,82 @@ async function confirmOrder({ items, guestName, roomNumber }, sessionId) {
   };
 }
 
+async function notifyFrontDesk({ issue, roomNumber, urgent }, sessionId) {
+  if (!issue || !issue.trim()) {
+    return { success: false, message: "Cannot notify the front desk without a description of the issue." };
+  }
+
+  if (!roomNumber) {
+    const session = await prisma.session.findUnique({ where: { id: sessionId } });
+    roomNumber = session?.roomNumber || null;
+  }
+
+  const alert = await prisma.frontDeskAlert.create({
+    data: {
+      hotelId: DEFAULT_HOTEL_ID,
+      sessionId,
+      issue: issue.trim(),
+      roomNumber: roomNumber || null,
+      urgency: urgent ? "urgent" : "normal",
+    },
+  });
+
+  return { success: true, alertId: alert.id, escalation: { issue: alert.issue, urgent: !!urgent } };
+}
+
+const SEARCH_RESULT_KEYS = {
+  search_menu: { type: "menu", key: "items" },
+  search_spa: { type: "spa", key: "services" },
+  search_housekeeping: { type: "housekeeping", key: "items" },
+  search_library: { type: "library", key: "items" },
+};
+
+export function buildItemsTable(toolName, result) {
+  const mapping = SEARCH_RESULT_KEYS[toolName];
+  if (!mapping) return null;
+  const items = result[mapping.key];
+  if (!items) return null;
+  return { type: mapping.type, items };
+}
+
+// Only the fields the model actually reasons over — item resolution happens by name
+// lookup elsewhere, so id/hotelId/isActive/timestamps are pure token cost with zero
+// behavioral value once they're in the model's context. The frontend table (buildItemsTable,
+// above) still gets the full untrimmed rows; this only shrinks what goes to the LLM.
+const MODEL_ITEM_FIELDS = {
+  search_menu: ({ name, category, vegetarian, price, description }) => ({ name, category, vegetarian, price, description }),
+  search_spa: ({ name, category, durationMin, price, description }) => ({ name, category, durationMin, price, description }),
+  search_housekeeping: ({ name, category, price, description }) => ({ name, category, price, description }),
+  search_library: ({ name, category, author, price, description }) => ({ name, category, author, price, description }),
+};
+
+export function trimResultForModel(toolName, result) {
+  const mapping = SEARCH_RESULT_KEYS[toolName];
+  const items = mapping && result[mapping.key];
+  if (!mapping || !items) return result;
+  return { ...result, [mapping.key]: items.map(MODEL_ITEM_FIELDS[toolName]) };
+}
+
 export async function executeTool(name, args, context) {
   switch (name) {
     case "search_menu":
       return searchMenu(args);
     case "search_spa":
       return searchSpa(args);
+    case "search_housekeeping":
+      return searchHousekeeping(args);
+    case "search_library":
+      return searchLibrary(args);
     case "add_to_order":
-      return addToOrder(args);
+      return addToOrder(args, context.sessionId);
     case "remove_from_order":
-      return removeFromOrder(args);
+      return removeFromOrder(args, context.sessionId);
+    case "get_cart":
+      return getCartTool(context.sessionId);
     case "confirm_order":
       return confirmOrder(args, context.sessionId);
+    case "notify_front_desk":
+      return notifyFrontDesk(args, context.sessionId);
     default:
       return { success: false, message: `Unknown tool: ${name}` };
   }

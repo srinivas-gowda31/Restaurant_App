@@ -1,20 +1,71 @@
+import crypto from "crypto";
 import { Router } from "express";
 import multer from "multer";
 import { prisma, DEFAULT_HOTEL_ID } from "../db.js";
 import { extractItemsFromFile, describeGeminiError } from "../gemini.js";
+import { extractItemsFromFileAzure, describeAzureExtractError } from "../azureExtract.js";
+import { extractItemsFromFileLocalOcr, describeLocalOcrError } from "../ocrExtract.js";
+import { extractItemsFromFileHF, describeHFExtractError } from "../hfExtract.js";
+import { extractItemsFromFileGroq, describeGroqExtractError } from "../groqExtract.js";
 import { parseSpreadsheet } from "../excelImport.js";
+import { normalizeMenuCategory } from "../menuCategories.js";
+import { mapWithConcurrency } from "../concurrency.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const router = Router();
 
+const CATALOG_TYPES = ["menu", "spa", "housekeeping", "library"];
+
+// "gemini" (default), "azure" (needs a deployed standard GPT-4o resource), "local-ocr"
+// (PaddleOCR in-process), "huggingface" (free serverless Inference Providers — but capped
+// at $0.10/month account-wide, not enough for real usage), or "groq" (no dollar credits, just
+// rate limits — ~1000 req/day free, the current recommended option). local-ocr/huggingface use
+// Gemini's CHAT_MODEL to structure OCR'd text; groq structures with its own model instead.
+const EXTRACTION_PROVIDER = process.env.EXTRACTION_PROVIDER || "gemini";
+
+const EXTRACTORS = {
+  gemini: { extract: extractItemsFromFile, describeError: describeGeminiError },
+  azure: { extract: extractItemsFromFileAzure, describeError: describeAzureExtractError },
+  "local-ocr": { extract: extractItemsFromFileLocalOcr, describeError: describeLocalOcrError },
+  huggingface: { extract: extractItemsFromFileHF, describeError: describeHFExtractError },
+  groq: { extract: extractItemsFromFileGroq, describeError: describeGroqExtractError },
+};
+
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+if (!ADMIN_API_KEY) {
+  console.warn(
+    "ADMIN_API_KEY is not set — every /api/admin request will be rejected until it's configured in .env."
+  );
+}
+
+function timingSafeEqual(a, b) {
+  const bufA = Buffer.from(a || "");
+  const bufB = Buffer.from(b || "");
+  // Buffers of different lengths would throw in timingSafeEqual, and their differing
+  // length is itself not sensitive here, so just fail fast.
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+// Every route below is staff-only (menu/room management, orders, guest names, usage
+// stats) — fail closed (never open) if the key isn't configured or doesn't match.
+router.use((req, res, next) => {
+  const provided = req.get("X-Admin-Key");
+  if (!ADMIN_API_KEY || !provided || !timingSafeEqual(provided, ADMIN_API_KEY)) {
+    return res.status(401).json({ error: "Missing or invalid admin key." });
+  }
+  next();
+});
+
 router.post("/upload", upload.single("file"), async (req, res) => {
   try {
     const { type } = req.body;
-    if (!req.file || !type || !["menu", "spa"].includes(type)) {
-      return res.status(400).json({ error: "A file and a type ('menu' or 'spa') are required." });
+    if (!req.file || !type || !CATALOG_TYPES.includes(type)) {
+      return res.status(400).json({ error: `A file and a type (${CATALOG_TYPES.join(", ")}) are required.` });
     }
 
-    const extraction = await extractItemsFromFile(req.file.buffer, req.file.mimetype, type);
+    const extractor = EXTRACTORS[EXTRACTION_PROVIDER] || EXTRACTORS.gemini;
+    const extraction = await extractor.extract(req.file.buffer, req.file.mimetype, type);
 
     const uploadRecord = await prisma.upload.create({
       data: {
@@ -29,7 +80,8 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     res.json({ upload: uploadRecord, extraction });
   } catch (err) {
     console.error("Upload error:", err);
-    const { httpStatus, message } = describeGeminiError(err);
+    const extractor = EXTRACTORS[EXTRACTION_PROVIDER] || EXTRACTORS.gemini;
+    const { httpStatus, message } = extractor.describeError(err);
     res.status(httpStatus).json({ error: message });
   }
 });
@@ -37,8 +89,8 @@ router.post("/upload", upload.single("file"), async (req, res) => {
 router.post("/upload-excel", upload.single("file"), async (req, res) => {
   try {
     const { type } = req.body;
-    if (!req.file || !type || !["menu", "spa"].includes(type)) {
-      return res.status(400).json({ error: "A spreadsheet file and a type ('menu' or 'spa') are required." });
+    if (!req.file || !type || !CATALOG_TYPES.includes(type)) {
+      return res.status(400).json({ error: `A spreadsheet file and a type (${CATALOG_TYPES.join(", ")}) are required.` });
     }
 
     const items = await parseSpreadsheet(req.file.buffer, type);
@@ -73,6 +125,40 @@ router.get("/uploads", async (req, res) => {
   res.json({ uploads });
 });
 
+function buildCatalogData(type, item) {
+  const base = {
+    hotelId: DEFAULT_HOTEL_ID,
+    name: item.name,
+    category: type === "menu" ? normalizeMenuCategory(item.category) : item.category || "Other",
+    price: Number(item.price) || 0,
+    description: item.description || "",
+  };
+  if (type === "menu") return { ...base, vegetarian: !!item.vegetarian };
+  if (type === "spa") return { ...base, durationMin: item.durationMin ? Number(item.durationMin) : null };
+  if (type === "library") return { ...base, author: item.author || null };
+  return base; // housekeeping
+}
+
+const CATALOG_MODEL = {
+  menu: (p) => p.menuItem,
+  spa: (p) => p.spaService,
+  housekeeping: (p) => p.housekeepingItem,
+  library: (p) => p.libraryItem,
+};
+
+// Looks up an existing catalog item by name (case-insensitive) within the hotel and
+// replaces it in place if found, instead of creating a second row — so re-uploading
+// the same menu (or a guest's manual edit) never leaves duplicates like "Tea" / "TEA".
+async function upsertCatalogItem(model, hotelId, data) {
+  const existing = await model.findFirst({
+    where: { hotelId, name: { equals: data.name, mode: "insensitive" } },
+  });
+  if (existing) {
+    return model.update({ where: { id: existing.id }, data: { ...data, isActive: true } });
+  }
+  return model.create({ data });
+}
+
 router.post("/uploads/:id/approve", async (req, res) => {
   try {
     const uploadRecord = await prisma.upload.findUnique({ where: { id: req.params.id } });
@@ -82,30 +168,36 @@ router.post("/uploads/:id/approve", async (req, res) => {
     }
 
     const items = req.body.items || JSON.parse(uploadRecord.rawExtractionJson || "{}").items || [];
+    const model = CATALOG_MODEL[uploadRecord.type]?.(prisma);
+    if (!model) return res.status(400).json({ error: `Unknown upload type: ${uploadRecord.type}` });
 
-    if (uploadRecord.type === "menu") {
-      await prisma.menuItem.createMany({
-        data: items.map((i) => ({
-          hotelId: DEFAULT_HOTEL_ID,
-          name: i.name,
-          category: i.category || "Other",
-          vegetarian: !!i.vegetarian,
-          price: Number(i.price) || 0,
-          description: i.description || "",
-        })),
-      });
-    } else {
-      await prisma.spaService.createMany({
-        data: items.map((i) => ({
-          hotelId: DEFAULT_HOTEL_ID,
-          name: i.name,
-          category: i.category || "Other",
-          durationMin: i.durationMin ? Number(i.durationMin) : null,
-          price: Number(i.price) || 0,
-          description: i.description || "",
-        })),
-      });
+    // Dedupe by case-insensitive name in memory (later row wins) instead of relying on
+    // sequential DB writes to resolve it — a real multi-page hotel menu can run 150-200+
+    // items, and this used to do 2 sequential round trips per item (a lookup, then a
+    // create/update). One findMany up front resolves which names already exist.
+    const dedupedByName = new Map();
+    for (const i of items) {
+      if (i?.name) dedupedByName.set(String(i.name).trim().toLowerCase(), i);
     }
+    const dedupedItems = [...dedupedByName.values()];
+
+    const existing = await model.findMany({ where: { hotelId: DEFAULT_HOTEL_ID } });
+    const existingByName = new Map(existing.map((e) => [e.name.toLowerCase(), e]));
+
+    // A fresh upload is almost always all-new rows — split into a single createMany (one round
+    // trip, no matter how many items) and updates for the few names that already exist, rather
+    // than N individual create() calls each paying their own network round trip.
+    const toCreate = [];
+    const toUpdate = [];
+    for (const i of dedupedItems) {
+      const data = { ...buildCatalogData(uploadRecord.type, i), isActive: true };
+      const match = existingByName.get(String(i.name).trim().toLowerCase());
+      if (match) toUpdate.push({ id: match.id, data });
+      else toCreate.push(data);
+    }
+
+    if (toCreate.length > 0) await model.createMany({ data: toCreate });
+    await mapWithConcurrency(toUpdate, 10, ({ id, data }) => model.update({ where: { id }, data }));
 
     const updated = await prisma.upload.update({
       where: { id: uploadRecord.id },
@@ -149,15 +241,13 @@ router.post("/menu-items", async (req, res) => {
   if (!name || price === undefined || price === null || price === "") {
     return res.status(400).json({ error: "Name and price are required." });
   }
-  const item = await prisma.menuItem.create({
-    data: {
-      hotelId: DEFAULT_HOTEL_ID,
-      name,
-      category: category || "Other",
-      vegetarian: !!vegetarian,
-      price: Number(price) || 0,
-      description: description || "",
-    },
+  const item = await upsertCatalogItem(prisma.menuItem, DEFAULT_HOTEL_ID, {
+    hotelId: DEFAULT_HOTEL_ID,
+    name,
+    category: normalizeMenuCategory(category),
+    vegetarian: !!vegetarian,
+    price: Number(price) || 0,
+    description: description || "",
   });
   res.json({ item });
 });
@@ -166,7 +256,14 @@ router.patch("/menu-items/:id", async (req, res) => {
   const { name, category, vegetarian, price, description, isActive } = req.body;
   const item = await prisma.menuItem.update({
     where: { id: req.params.id },
-    data: { name, category, vegetarian, price, description, isActive },
+    data: {
+      name,
+      category: category !== undefined ? normalizeMenuCategory(category) : undefined,
+      vegetarian,
+      price,
+      description,
+      isActive,
+    },
   });
   res.json({ item });
 });
@@ -184,15 +281,13 @@ router.post("/spa-services", async (req, res) => {
   if (!name || price === undefined || price === null || price === "") {
     return res.status(400).json({ error: "Name and price are required." });
   }
-  const service = await prisma.spaService.create({
-    data: {
-      hotelId: DEFAULT_HOTEL_ID,
-      name,
-      category: category || "Other",
-      durationMin: durationMin ? Number(durationMin) : null,
-      price: Number(price) || 0,
-      description: description || "",
-    },
+  const service = await upsertCatalogItem(prisma.spaService, DEFAULT_HOTEL_ID, {
+    hotelId: DEFAULT_HOTEL_ID,
+    name,
+    category: category || "Other",
+    durationMin: durationMin ? Number(durationMin) : null,
+    price: Number(price) || 0,
+    description: description || "",
   });
   res.json({ service });
 });
@@ -204,6 +299,245 @@ router.patch("/spa-services/:id", async (req, res) => {
     data: { name, category, durationMin, price, description, isActive },
   });
   res.json({ service });
+});
+
+router.get("/housekeeping-items", async (req, res) => {
+  const items = await prisma.housekeepingItem.findMany({
+    where: { hotelId: DEFAULT_HOTEL_ID },
+    orderBy: [{ category: "asc" }, { name: "asc" }],
+  });
+  res.json({ items });
+});
+
+router.post("/housekeeping-items", async (req, res) => {
+  const { name, category, price, description } = req.body;
+  if (!name || price === undefined || price === null || price === "") {
+    return res.status(400).json({ error: "Name and price are required." });
+  }
+  const item = await upsertCatalogItem(prisma.housekeepingItem, DEFAULT_HOTEL_ID, {
+    hotelId: DEFAULT_HOTEL_ID,
+    name,
+    category: category || "Other",
+    price: Number(price) || 0,
+    description: description || "",
+  });
+  res.json({ item });
+});
+
+router.patch("/housekeeping-items/:id", async (req, res) => {
+  const { name, category, price, description, isActive } = req.body;
+  const item = await prisma.housekeepingItem.update({
+    where: { id: req.params.id },
+    data: { name, category, price, description, isActive },
+  });
+  res.json({ item });
+});
+
+router.get("/library-items", async (req, res) => {
+  const items = await prisma.libraryItem.findMany({
+    where: { hotelId: DEFAULT_HOTEL_ID },
+    orderBy: [{ category: "asc" }, { name: "asc" }],
+  });
+  res.json({ items });
+});
+
+router.post("/library-items", async (req, res) => {
+  const { name, category, author, price, description } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: "Name is required." });
+  }
+  const item = await upsertCatalogItem(prisma.libraryItem, DEFAULT_HOTEL_ID, {
+    hotelId: DEFAULT_HOTEL_ID,
+    name,
+    category: category || "Other",
+    author: author || null,
+    price: Number(price) || 0,
+    description: description || "",
+  });
+  res.json({ item });
+});
+
+router.patch("/library-items/:id", async (req, res) => {
+  const { name, category, author, price, description, isActive } = req.body;
+  const item = await prisma.libraryItem.update({
+    where: { id: req.params.id },
+    data: { name, category, author, price, description, isActive },
+  });
+  res.json({ item });
+});
+
+const FULFILLMENT_MODEL = {
+  kitchen: (p) => p.kitchenTicket,
+  housekeeping: (p) => p.housekeepingRequest,
+  spa: (p) => p.spaBooking,
+  library: (p) => p.libraryRequest,
+};
+
+router.get("/fulfillment/:department", async (req, res) => {
+  const model = FULFILLMENT_MODEL[req.params.department]?.(prisma);
+  if (!model) return res.status(404).json({ error: `Unknown department: ${req.params.department}` });
+
+  const tickets = await model.findMany({ orderBy: { createdAt: "desc" } });
+  res.json({ tickets });
+});
+
+router.patch("/fulfillment/:department/:id", async (req, res) => {
+  const model = FULFILLMENT_MODEL[req.params.department]?.(prisma);
+  if (!model) return res.status(404).json({ error: `Unknown department: ${req.params.department}` });
+
+  const { status } = req.body;
+  const ticket = await model.update({
+    where: { id: req.params.id },
+    data: { status },
+  });
+  res.json({ ticket });
+});
+
+router.get("/front-desk-alerts", async (req, res) => {
+  const alerts = await prisma.frontDeskAlert.findMany({
+    where: { hotelId: DEFAULT_HOTEL_ID },
+    orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+  });
+  res.json({ alerts });
+});
+
+router.patch("/front-desk-alerts/:id", async (req, res) => {
+  const { status } = req.body;
+  const alert = await prisma.frontDeskAlert.update({
+    where: { id: req.params.id },
+    data: { status },
+  });
+  res.json({ alert });
+});
+
+router.get("/rooms", async (req, res) => {
+  const rooms = await prisma.room.findMany({
+    where: { hotelId: DEFAULT_HOTEL_ID },
+    orderBy: { number: "asc" },
+  });
+  res.json({ rooms });
+});
+
+router.post("/rooms", async (req, res) => {
+  const { number, guestName } = req.body;
+  if (!number || !number.trim()) {
+    return res.status(400).json({ error: "Room number is required." });
+  }
+  const room = await prisma.room.upsert({
+    where: { hotelId_number: { hotelId: DEFAULT_HOTEL_ID, number: number.trim() } },
+    update: { guestName: guestName?.trim() || null },
+    create: { hotelId: DEFAULT_HOTEL_ID, number: number.trim(), guestName: guestName?.trim() || null },
+  });
+  res.json({ room });
+});
+
+router.patch("/rooms/:id", async (req, res) => {
+  const { number, guestName } = req.body;
+  const room = await prisma.room.update({
+    where: { id: req.params.id },
+    data: {
+      number: number !== undefined ? number.trim() : undefined,
+      guestName: guestName !== undefined ? guestName?.trim() || null : undefined,
+    },
+  });
+  res.json({ room });
+});
+
+router.delete("/rooms/:id", async (req, res) => {
+  await prisma.room.delete({ where: { id: req.params.id } });
+  res.json({ success: true });
+});
+
+router.get("/token-usage", async (req, res) => {
+  try {
+    const hotelId = DEFAULT_HOTEL_ID;
+
+    const totals = await prisma.tokenUsage.aggregate({
+      where: { hotelId },
+      _sum: { promptTokens: true, completionTokens: true, totalTokens: true },
+      _count: { _all: true },
+    });
+
+    // A "conversation" is COALESCE(callId, sessionId): for voice, callId is a fresh id
+    // per WebSocket connection (one call), so two separate calls from the same guest
+    // count as two conversations, not one. For chat, callId is null and sessionId (the
+    // guest's whole visit) is the right grouping since there's no separate call boundary.
+    // Also carries each conversation's token rate: tokens / its active span in minutes,
+    // floored at 1 minute so a single-turn conversation doesn't produce an inflated rate.
+    const conversationStats = await prisma.$queryRaw`
+      SELECT
+        COALESCE("callId", "sessionId") AS conv_key,
+        source,
+        SUM("totalTokens")::int AS tokens,
+        COUNT(*)::int AS calls,
+        GREATEST(EXTRACT(EPOCH FROM (MAX("createdAt") - MIN("createdAt"))) / 60.0, 1) AS minutes
+      FROM "TokenUsage"
+      WHERE "hotelId" = ${hotelId}
+      GROUP BY conv_key, source
+    `;
+
+    const avgTokensPerMinute = (rows) => {
+      if (rows.length === 0) return 0;
+      const rates = rows.map((r) => r.tokens / Number(r.minutes));
+      return Math.round(rates.reduce((a, b) => a + b, 0) / rates.length);
+    };
+
+    const totalConversations = conversationStats.length;
+
+    const bySourceMap = new Map();
+    for (const row of conversationStats) {
+      if (!bySourceMap.has(row.source)) bySourceMap.set(row.source, []);
+      bySourceMap.get(row.source).push(row);
+    }
+    const bySource = Array.from(bySourceMap.entries()).map(([source, rows]) => {
+      const tokens = rows.reduce((sum, r) => sum + r.tokens, 0);
+      const calls = rows.reduce((sum, r) => sum + r.calls, 0);
+      const conversations = rows.length;
+      return {
+        source,
+        calls,
+        conversations,
+        totalTokens: tokens,
+        avgTokensPerConversation: conversations ? Math.round(tokens / conversations) : 0,
+        avgTokensPerMinute: avgTokensPerMinute(rows),
+      };
+    });
+
+    const daily = await prisma.$queryRaw`
+      SELECT
+        date_trunc('day', "createdAt") AS day,
+        SUM("totalTokens")::int AS tokens,
+        COUNT(DISTINCT COALESCE("callId", "sessionId"))::int AS conversations
+      FROM "TokenUsage"
+      WHERE "hotelId" = ${hotelId} AND "createdAt" >= NOW() - INTERVAL '14 days'
+      GROUP BY day
+      ORDER BY day ASC
+    `;
+
+    const totalTokens = totals._sum.totalTokens || 0;
+
+    res.json({
+      summary: {
+        totalConversations,
+        totalCalls: totals._count._all,
+        totalTokens,
+        totalPromptTokens: totals._sum.promptTokens || 0,
+        totalCompletionTokens: totals._sum.completionTokens || 0,
+        avgTokensPerConversation: totalConversations ? Math.round(totalTokens / totalConversations) : 0,
+        avgTokensPerMinute: avgTokensPerMinute(conversationStats),
+      },
+      bySource,
+      daily: daily.map((row) => ({
+        day: row.day,
+        tokens: row.tokens,
+        conversations: row.conversations,
+        avgTokensPerConversation: row.conversations ? Math.round(row.tokens / row.conversations) : 0,
+      })),
+    });
+  } catch (err) {
+    console.error("Token usage error:", err);
+    res.status(500).json({ error: "Failed to load token usage stats." });
+  }
 });
 
 export default router;

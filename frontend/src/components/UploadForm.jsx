@@ -88,6 +88,8 @@ export default function UploadForm({ onExtracted }) {
           >
             <option value="menu">Menu</option>
             <option value="spa">Spa</option>
+            <option value="housekeeping">Housekeeping</option>
+            <option value="library">Library</option>
           </select>
         </div>
 

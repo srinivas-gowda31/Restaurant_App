@@ -6,5 +6,6 @@ build/
 backend/prisma/dev.db
 backend/prisma/dev.db-journal
 backend/uploads/
+backend/qr-codes/
 *.log
 .DS_Store

@@ -21,9 +21,12 @@ router.post("/", upload.single("audio"), async (req, res) => {
       return res.status(422).json({ error: "Could not transcribe audio." });
     }
 
-    await prisma.voiceLog.create({ data: { sessionId, transcript } });
+    // Log in the background — the transcript is already captured, no need to block on the write.
+    prisma.voiceLog.create({ data: { sessionId, transcript } }).catch((err) =>
+      console.error("Failed to log voice transcript:", err)
+    );
 
-    const { reply, uiHints } = await runAssistantTurn({ sessionId, userMessage: transcript });
+    const { reply, uiHints } = await runAssistantTurn({ sessionId, userMessage: transcript, source: "voice" });
     const audioBase64 = await synthesizeSpeech(reply);
 
     res.json({ transcript, reply, uiHints, audioBase64 });

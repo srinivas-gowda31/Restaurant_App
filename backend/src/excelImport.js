@@ -1,11 +1,12 @@
 import ExcelJS from "exceljs";
 
-const NAME_KEYS = ["name", "item", "itemname", "item name", "dish", "dish name"];
+const NAME_KEYS = ["name", "item", "itemname", "item name", "dish", "dish name", "title"];
 const CATEGORY_KEYS = ["category", "type", "section"];
 const VEG_KEYS = ["vegetarian", "veg", "isveg", "is_veg", "veg/nonveg", "veg type"];
 const PRICE_KEYS = ["price", "cost", "rate", "amount"];
 const DESCRIPTION_KEYS = ["description", "desc", "details", "notes"];
 const DURATION_KEYS = ["duration", "durationmin", "duration (min)", "duration_min", "duration in minutes"];
+const AUTHOR_KEYS = ["author", "writer", "by"];
 
 function normalizeHeader(h) {
   return String(h || "").trim().toLowerCase();
@@ -25,9 +26,10 @@ function parseVegetarian(raw) {
 }
 
 /**
- * Parses an uploaded .xlsx spreadsheet into menu/spa item rows.
- * Expects a header row with recognizable column names (case-insensitive):
- * name, category, vegetarian (menu only), price, description, duration (spa only).
+ * Parses an uploaded .xlsx spreadsheet into catalog item rows for menu, spa,
+ * housekeeping, or library. Expects a header row with recognizable column
+ * names (case-insensitive): name, category, price, description, plus
+ * vegetarian (menu), duration (spa), author (library).
  */
 export async function parseSpreadsheet(buffer, type) {
   const workbook = new ExcelJS.Workbook();
@@ -68,6 +70,16 @@ export async function parseSpreadsheet(buffer, type) {
         description,
         durationMin: durationRaw ? Number(durationRaw) : undefined,
       });
+    } else if (type === "library") {
+      items.push({
+        name,
+        category,
+        price,
+        description,
+        author: String(findValue(rowObj, AUTHOR_KEYS) || "").trim() || undefined,
+      });
+    } else if (type === "housekeeping") {
+      items.push({ name, category, price, description });
     } else {
       items.push({
         name,

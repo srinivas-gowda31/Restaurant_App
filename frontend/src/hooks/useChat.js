@@ -1,12 +1,17 @@
-import { useCallback, useState } from "react";
-import { sendChatMessage } from "../services/api.js";
+import { useCallback, useEffect, useState } from "react";
+import { sendChatMessage, registerGuestSession } from "../services/api.js";
 import { getSessionId } from "./useSessionId.js";
 
-export function useChat({ onUiHints } = {}) {
+export function useChat({ onUiHints, guestContext } = {}) {
   const [sessionId] = useState(getSessionId);
   const [messages, setMessages] = useState([]);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!guestContext?.roomNumber && !guestContext?.guestName) return;
+    registerGuestSession(sessionId, guestContext.roomNumber, guestContext.guestName).catch(() => {});
+  }, [sessionId, guestContext?.roomNumber, guestContext?.guestName]);
 
   const addMessage = useCallback((role, content, extra = {}) => {
     setMessages((prev) => [...prev, { id: `${Date.now()}_${Math.random()}`, role, content, ...extra }]);

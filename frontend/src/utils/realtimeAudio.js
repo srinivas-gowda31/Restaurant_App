@@ -36,50 +36,26 @@ function int16ToFloat32(int16Array) {
 }
 
 /**
- * Schedules base64-encoded PCM16 chunks for gapless sequential playback,
- * since Azure Realtime streams audio as a series of small deltas.
+ * Feeds base64-encoded PCM16 deltas to a pcm-playback-processor AudioWorkletNode (see
+ * public/pcm-playback-worklet.js) for gapless playback. Delegates to the worklet rather
+ * than scheduling a chain of AudioBufferSourceNodes — chaining many small nodes back to
+ * back, even with perfect timing, can still click at each node boundary since the
+ * waveform itself has a discontinuity where one buffer ends and the next begins. A single
+ * continuous worklet stream has no such boundaries.
  */
 export class RealtimePlaybackQueue {
-  constructor(audioContext) {
-    this.audioContext = audioContext;
-    this.nextStartTime = 0;
-    this.activeSources = new Set();
+  constructor(playbackNode) {
+    this.playbackNode = playbackNode;
   }
 
   enqueue(base64Pcm16) {
     const pcmBuffer = base64ToArrayBuffer(base64Pcm16);
     const int16 = new Int16Array(pcmBuffer);
     const float32 = int16ToFloat32(int16);
-
-    const audioBuffer = this.audioContext.createBuffer(1, float32.length, REALTIME_SAMPLE_RATE);
-    audioBuffer.copyToChannel(float32, 0);
-
-    const source = this.audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(this.audioContext.destination);
-
-    const now = this.audioContext.currentTime;
-    const startAt = Math.max(now, this.nextStartTime);
-    source.start(startAt);
-    this.nextStartTime = startAt + audioBuffer.duration;
-
-    this.activeSources.add(source);
-    source.onended = () => this.activeSources.delete(source);
+    this.playbackNode.port.postMessage(float32.buffer, [float32.buffer]);
   }
 
   clear() {
-    this.activeSources.forEach((source) => {
-      try {
-        source.stop();
-      } catch {
-        // already stopped
-      }
-    });
-    this.activeSources.clear();
-    this.nextStartTime = 0;
-  }
-
-  get isPlaying() {
-    return this.activeSources.size > 0;
+    this.playbackNode.port.postMessage("clear");
   }
 }

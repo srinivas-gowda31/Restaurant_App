@@ -6,15 +6,35 @@ import TextInput from "../components/TextInput.jsx";
 import OrderPanel from "../components/OrderPanel.jsx";
 import WelcomeCard from "../components/WelcomeCard.jsx";
 import LiveVoiceButton from "../components/LiveVoiceButton.jsx";
+import QrScannerModal from "../components/QrScannerModal.jsx";
 import { useOrder } from "../hooks/useOrder.js";
 import { useChat } from "../hooks/useChat.js";
 import { useRealtimeVoice } from "../hooks/useRealtimeVoice.js";
+import { useGuestContext, parseRoomQrText } from "../hooks/useGuestContext.js";
+import { resetSessionId } from "../hooks/useSessionId.js";
 
 export default function GuestPage() {
   const navigate = useNavigate();
   const order = useOrder();
+  const guestContext = useGuestContext();
   const [isOrderPanelOpen, setIsOrderPanelOpen] = useState(false);
-  const chat = useChat();
+  const [isScanning, setIsScanning] = useState(false);
+  const chat = useChat({ guestContext });
+
+  const handleScanDetected = useCallback((text) => {
+    const parsed = parseRoomQrText(text);
+    if (!parsed) {
+      setIsScanning(false);
+      return;
+    }
+    // A fresh full-page load — same as what happens on a real phone scan — so chat
+    // history, the cart, and the session id all reset cleanly for the newly-scanned
+    // guest instead of a same-tab state tweak that leaves stale conversation on screen.
+    resetSessionId();
+    const params = new URLSearchParams({ room: parsed.room });
+    if (parsed.guestName) params.set("guest", parsed.guestName);
+    window.location.href = `${window.location.pathname}?${params.toString()}`;
+  }, []);
 
   const handleUiHints = useCallback(
     (uiHints) => {
@@ -33,6 +53,7 @@ export default function GuestPage() {
   const liveVoice = useRealtimeVoice({
     onTranscript: (role, text) => chat.addMessage(role, text),
     onUiHints: handleUiHints,
+    guestContext,
   });
 
   const handleConfirmOrder = () => {
@@ -44,12 +65,21 @@ export default function GuestPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-brand-50">
-      <Header onToggleOrder={() => setIsOrderPanelOpen(true)} orderCount={order.items.length} />
+      <Header
+        onToggleOrder={() => setIsOrderPanelOpen(true)}
+        orderCount={order.items.length}
+        onScan={() => setIsScanning(true)}
+      />
 
       <div className="mx-auto flex w-full max-w-6xl flex-1 lg:border-x lg:border-brand-100">
         <main className="flex flex-1 flex-col">
           {chat.messages.length === 0 ? (
-            <WelcomeCard onSuggestion={chat.sendMessage} />
+            <WelcomeCard
+              onSuggestion={chat.sendMessage}
+              guestName={guestContext.guestName}
+              roomNumber={guestContext.roomNumber}
+              onScan={() => setIsScanning(true)}
+            />
           ) : (
             <ChatDisplay messages={chat.messages} isBusy={isBusy} onAddItem={order.applyCartAction} />
           )}
@@ -78,6 +108,8 @@ export default function GuestPage() {
           disabled={isBusy}
         />
       </div>
+
+      {isScanning && <QrScannerModal onDetect={handleScanDetected} onClose={() => setIsScanning(false)} />}
     </div>
   );
 }
