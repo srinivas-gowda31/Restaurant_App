@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { MENU_CATEGORIES } from "./menuCategories.js";
+import { CUISINES } from "./cuisines.js";
 import { EXTRACTION_INSTRUCTIONS } from "./extractionInstructions.js";
 
 const apiKey = process.env.GEMINI_API_KEY;
@@ -76,6 +77,16 @@ export async function synthesizeSpeech(text) {
 function buildExtractionSchema(type) {
   const categorySchema =
     type === "menu" ? { type: "string", enum: MENU_CATEGORIES } : { type: "string" };
+  const properties = {
+    name: { type: "string" },
+    category: categorySchema,
+    vegetarian: { type: "boolean" },
+    price: { type: "number" },
+    description: { type: "string" },
+    durationMin: { type: "number" },
+    author: { type: "string" },
+  };
+  if (type === "menu") properties.cuisine = { type: "string", enum: CUISINES };
 
   return {
     type: "object",
@@ -84,16 +95,8 @@ function buildExtractionSchema(type) {
         type: "array",
         items: {
           type: "object",
-          properties: {
-            name: { type: "string" },
-            category: categorySchema,
-            vegetarian: { type: "boolean" },
-            price: { type: "number" },
-            description: { type: "string" },
-            durationMin: { type: "number" },
-            author: { type: "string" },
-          },
-          required: ["name", "category", "price"],
+          properties,
+          required: type === "menu" ? ["name", "category", "cuisine", "price"] : ["name", "category", "price"],
         },
       },
     },

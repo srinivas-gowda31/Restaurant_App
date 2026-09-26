@@ -2,6 +2,7 @@ import { convertPdfToImages } from "./pdfToImages.js";
 import { ocrPagesWithPaddle } from "./paddleOcr.js";
 import { EXTRACTION_INSTRUCTIONS } from "./extractionInstructions.js";
 import { MENU_CATEGORIES } from "./menuCategories.js";
+import { CUISINES } from "./cuisines.js";
 import { mapWithConcurrency } from "./concurrency.js";
 
 // Groq — no dollar-credit system, just rate limits, which comfortably covers occasional admin
@@ -40,7 +41,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callGroqChat(body) {
+export async function callGroqChat(body) {
   let attempt = 0;
   for (;;) {
     const response = await fetch(GROQ_API_URL, {
@@ -126,15 +127,17 @@ function parseJsonResponse(content) {
 export async function structureExtractedTextGroq(text, type) {
   const instructions = EXTRACTION_INSTRUCTIONS[type] || EXTRACTION_INSTRUCTIONS.menu;
   const categoryHint = type === "menu" ? ` "category" must be exactly one of: ${MENU_CATEGORIES.join(", ")}.` : "";
+  const cuisineHint = type === "menu" ? ` "cuisine" must be exactly one of: ${CUISINES.join(", ")}.` : "";
+  const cuisineField = type === "menu" ? `,"cuisine":string` : "";
 
-  const prompt = `${instructions}${categoryHint}
+  const prompt = `${instructions}${categoryHint}${cuisineHint}
 
 Document text (from OCR, may contain minor errors):
 ${text}
 
 Respond with ONLY a JSON object of this exact shape — no markdown fences, no commentary, no extra top-level fields:
-{"items":[{"name":string,"category":string,"vegetarian":boolean,"price":number,"description":string}]}
-Omit "vegetarian" for non-food catalogs. If you don't have a description, use "" (empty string) —
+{"items":[{"name":string,"category":string${cuisineField},"vegetarian":boolean,"price":number,"description":string}]}
+Omit "vegetarian" and "cuisine" for non-food catalogs. If you don't have a description, use "" (empty string) —
 never the word null and never omit "items".`;
 
   // Groq's per-minute token budget is reserved against max_tokens at request time, not actual

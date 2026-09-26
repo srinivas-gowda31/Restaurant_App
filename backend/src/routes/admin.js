@@ -9,6 +9,8 @@ import { extractItemsFromFileHF, describeHFExtractError } from "../hfExtract.js"
 import { extractItemsFromFileGroq, describeGroqExtractError } from "../groqExtract.js";
 import { parseSpreadsheet } from "../excelImport.js";
 import { normalizeMenuCategory } from "../menuCategories.js";
+import { normalizeCuisine } from "../cuisines.js";
+import { classifyCuisines } from "../cuisineClassifier.js";
 import { mapWithConcurrency } from "../concurrency.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -133,7 +135,7 @@ function buildCatalogData(type, item) {
     price: Number(item.price) || 0,
     description: item.description || "",
   };
-  if (type === "menu") return { ...base, vegetarian: !!item.vegetarian };
+  if (type === "menu") return { ...base, vegetarian: !!item.vegetarian, cuisine: normalizeCuisine(item.cuisine) };
   if (type === "spa") return { ...base, durationMin: item.durationMin ? Number(item.durationMin) : null };
   if (type === "library") return { ...base, author: item.author || null };
   return base; // housekeeping
@@ -180,6 +182,20 @@ router.post("/uploads/:id/approve", async (req, res) => {
       if (i?.name) dedupedByName.set(String(i.name).trim().toLowerCase(), i);
     }
     const dedupedItems = [...dedupedByName.values()];
+
+    // Menu extraction/Excel import may already tag cuisine (see extractionInstructions.js /
+    // excelImport.js) — only the leftovers (e.g. an older raw extraction saved before this
+    // field existed, or an Excel sheet with no cuisine column) need a classification call,
+    // batched into as few Groq requests as possible rather than one per item.
+    if (uploadRecord.type === "menu") {
+      const unclassified = dedupedItems.filter((i) => !i.cuisine);
+      if (unclassified.length > 0) {
+        const cuisines = await classifyCuisines(unclassified);
+        unclassified.forEach((item, i) => {
+          item.cuisine = cuisines[i];
+        });
+      }
+    }
 
     const existing = await model.findMany({ where: { hotelId: DEFAULT_HOTEL_ID } });
     const existingByName = new Map(existing.map((e) => [e.name.toLowerCase(), e]));
@@ -237,14 +253,18 @@ router.get("/menu-items", async (req, res) => {
 });
 
 router.post("/menu-items", async (req, res) => {
-  const { name, category, vegetarian, price, description } = req.body;
+  const { name, category, cuisine, vegetarian, price, description } = req.body;
   if (!name || price === undefined || price === null || price === "") {
     return res.status(400).json({ error: "Name and price are required." });
   }
+  // A staff-picked cuisine is normalized as-is; with none given, one Groq call classifies
+  // this single item rather than leaving it stuck defaulting to Continental.
+  const resolvedCuisine = cuisine ? normalizeCuisine(cuisine) : (await classifyCuisines([{ name, description }]))[0];
   const item = await upsertCatalogItem(prisma.menuItem, DEFAULT_HOTEL_ID, {
     hotelId: DEFAULT_HOTEL_ID,
     name,
     category: normalizeMenuCategory(category),
+    cuisine: resolvedCuisine,
     vegetarian: !!vegetarian,
     price: Number(price) || 0,
     description: description || "",
@@ -253,11 +273,12 @@ router.post("/menu-items", async (req, res) => {
 });
 
 router.patch("/menu-items/:id", async (req, res) => {
-  const { name, category, vegetarian, price, description, isActive } = req.body;
+  const { name, category, cuisine, vegetarian, price, description, isActive } = req.body;
   const item = await prisma.menuItem.update({
     where: { id: req.params.id },
     data: {
       name,
+      cuisine: cuisine !== undefined ? normalizeCuisine(cuisine) : undefined,
       category: category !== undefined ? normalizeMenuCategory(category) : undefined,
       vegetarian,
       price,
@@ -381,14 +402,23 @@ router.get("/fulfillment/:department", async (req, res) => {
   res.json({ tickets });
 });
 
+const AGENT_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
+
 router.patch("/fulfillment/:department/:id", async (req, res) => {
   const model = FULFILLMENT_MODEL[req.params.department]?.(prisma);
   if (!model) return res.status(404).json({ error: `Unknown department: ${req.params.department}` });
 
-  const { status } = req.body;
+  // priority/agentNote are written by the CrewAI ops-agent layer (agents/), not staff — status
+  // stays the only field FulfillmentBoard.jsx itself sends. Prisma skips undefined keys, so
+  // omitting priority/agentNote from a request (the staff UI's case) leaves them untouched.
+  const { status, priority, agentNote } = req.body;
+  if (priority !== undefined && priority !== null && !AGENT_PRIORITIES.has(priority)) {
+    return res.status(400).json({ error: `priority must be one of: ${[...AGENT_PRIORITIES].join(", ")}` });
+  }
+
   const ticket = await model.update({
     where: { id: req.params.id },
-    data: { status },
+    data: { status, priority, agentNote },
   });
   res.json({ ticket });
 });
@@ -402,10 +432,16 @@ router.get("/front-desk-alerts", async (req, res) => {
 });
 
 router.patch("/front-desk-alerts/:id", async (req, res) => {
-  const { status } = req.body;
+  // agentNote/urgency-upgrade are written by the CrewAI ops-agent layer (agents/); status stays
+  // the only field FrontDeskAlerts.jsx itself sends.
+  const { status, urgency, agentNote } = req.body;
+  if (urgency !== undefined && urgency !== null && !["normal", "urgent"].includes(urgency)) {
+    return res.status(400).json({ error: 'urgency must be "normal" or "urgent"' });
+  }
+
   const alert = await prisma.frontDeskAlert.update({
     where: { id: req.params.id },
-    data: { status },
+    data: { status, urgency, agentNote },
   });
   res.json({ alert });
 });

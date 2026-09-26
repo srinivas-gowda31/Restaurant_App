@@ -1,15 +1,19 @@
 import { Prisma } from "@prisma/client";
 import { prisma, DEFAULT_HOTEL_ID } from "./db.js";
+import { CUISINES } from "./cuisines.js";
 
 export const toolDeclarations = [
   {
     name: "search_menu",
-    description: "Search food/beverage menu items. Optional category or vegetarian filter.",
+    description:
+      "Search food/beverage menu items. Optional category, cuisine, or vegetarian filter. Use cuisine whenever " +
+      "the guest asks for a cuisine by name (e.g. \"Indian food\", \"something Chinese\") instead of relying on query text alone.",
     parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "Free-text term against name/description." },
         category: { type: "string", description: "e.g. Starters, Mains, Desserts, Beverages." },
+        cuisine: { type: "string", description: `One of: ${CUISINES.join(", ")}.`, enum: CUISINES },
         vegetarian: { type: "boolean", description: "true=veg-only, false=non-veg-only." },
       },
       required: [],
@@ -144,9 +148,10 @@ async function fuzzyCatalogSearch(tableName, { query, category, extraConditions 
   `);
 }
 
-async function searchMenu({ query, category, vegetarian }) {
+async function searchMenu({ query, category, cuisine, vegetarian }) {
   const extraConditions = [];
   if (typeof vegetarian === "boolean") extraConditions.push(Prisma.sql`vegetarian = ${vegetarian}`);
+  if (cuisine) extraConditions.push(Prisma.sql`cuisine ILIKE ${cuisine}`);
   const items = await fuzzyCatalogSearch("MenuItem", { query, category, extraConditions });
   return { items };
 }
@@ -390,7 +395,7 @@ export function buildItemsTable(toolName, result) {
 // behavioral value once they're in the model's context. The frontend table (buildItemsTable,
 // above) still gets the full untrimmed rows; this only shrinks what goes to the LLM.
 const MODEL_ITEM_FIELDS = {
-  search_menu: ({ name, category, vegetarian, price, description }) => ({ name, category, vegetarian, price, description }),
+  search_menu: ({ name, category, cuisine, vegetarian, price, description }) => ({ name, category, cuisine, vegetarian, price, description }),
   search_spa: ({ name, category, durationMin, price, description }) => ({ name, category, durationMin, price, description }),
   search_housekeeping: ({ name, category, price, description }) => ({ name, category, price, description }),
   search_library: ({ name, category, author, price, description }) => ({ name, category, author, price, description }),

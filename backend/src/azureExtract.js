@@ -1,4 +1,5 @@
 import { MENU_CATEGORIES } from "./menuCategories.js";
+import { CUISINES } from "./cuisines.js";
 import { EXTRACTION_INSTRUCTIONS } from "./extractionInstructions.js";
 
 const AZURE_ENDPOINT = process.env.AZURE_OPENAI_ENDPOINT;
@@ -16,6 +17,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jp
 // on every object — different shape than Gemini's schema, so it isn't shared between the two.
 function buildAzureExtractionSchema(type) {
   const categorySchema = type === "menu" ? { type: "string", enum: MENU_CATEGORIES } : { type: "string" };
+  const cuisineSchema = type === "menu" ? { type: "string", enum: CUISINES } : { type: "null" };
 
   return {
     type: "object",
@@ -27,13 +29,14 @@ function buildAzureExtractionSchema(type) {
           properties: {
             name: { type: "string" },
             category: categorySchema,
+            cuisine: cuisineSchema,
             vegetarian: { type: ["boolean", "null"] },
             price: { type: "number" },
             description: { type: ["string", "null"] },
             durationMin: { type: ["number", "null"] },
             author: { type: ["string", "null"] },
           },
-          required: ["name", "category", "vegetarian", "price", "description", "durationMin", "author"],
+          required: ["name", "category", "cuisine", "vegetarian", "price", "description", "durationMin", "author"],
           additionalProperties: false,
         },
       },

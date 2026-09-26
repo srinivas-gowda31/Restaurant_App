@@ -43,6 +43,7 @@ model MenuItem {
   hotelId     String
   name        String
   category    String
+  cuisine     String?
   vegetarian  Boolean  @default(true)
   price       Float
   description String?
@@ -210,6 +211,10 @@ model KitchenTicket {
   roomNumber String?
   status     String   @default("pending")
   createdAt  DateTime @default(now())
+  // Set by the CrewAI ops-agent layer (agents/), never by guest-facing tools.js — a triage
+  // pass over pending tickets, not a guest-visible field. "low" | "normal" | "high" | "urgent".
+  priority   String?
+  agentNote  String?
 
   @@index([orderId])
 }
@@ -223,6 +228,8 @@ model HousekeepingRequest {
   roomNumber  String?
   status      String   @default("pending")
   createdAt   DateTime @default(now())
+  priority    String?
+  agentNote   String?
 
   @@index([orderId])
 }
@@ -236,6 +243,8 @@ model SpaBooking {
   roomNumber  String?
   status      String   @default("pending")
   createdAt   DateTime @default(now())
+  priority    String?
+  agentNote   String?
 
   @@index([orderId])
 }
@@ -273,6 +282,8 @@ model FrontDeskAlert {
   urgency    String   @default("normal") // "normal" | "urgent"
   status     String   @default("open") // "open" | "acknowledged" | "resolved"
   createdAt  DateTime @default(now())
+  // Set by the CrewAI ops-agent layer (agents/) — may upgrade urgency after re-assessing.
+  agentNote  String?
 
   hotel   Hotel   @relation(fields: [hotelId], references: [id])
   session Session @relation(fields: [sessionId], references: [id])
@@ -290,6 +301,8 @@ model LibraryRequest {
   roomNumber  String?
   status      String   @default("pending")
   createdAt   DateTime @default(now())
+  priority    String?
+  agentNote   String?
 
   @@index([orderId])
 }

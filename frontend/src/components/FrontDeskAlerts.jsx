@@ -53,7 +53,10 @@ export default function FrontDeskAlerts() {
           <tbody>
             {alerts.map((a) => (
               <tr key={a.id} className="border-b border-brand-50 last:border-0">
-                <td className="px-4 py-2">{a.issue}</td>
+                <td className="px-4 py-2">
+                  {a.issue}
+                  {a.agentNote && <p className="text-xs italic text-navy-950/50">{a.agentNote}</p>}
+                </td>
                 <td className="px-4 py-2">{a.roomNumber || "-"}</td>
                 <td className="px-4 py-2">
                   {a.urgency === "urgent" ? (

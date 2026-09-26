@@ -1,6 +1,7 @@
 import { convertPdfToImages } from "./pdfToImages.js";
 import { EXTRACTION_INSTRUCTIONS } from "./extractionInstructions.js";
 import { MENU_CATEGORIES } from "./menuCategories.js";
+import { CUISINES } from "./cuisines.js";
 import { mapWithConcurrency } from "./concurrency.js";
 
 // Hugging Face Inference Providers — a serverless router, not a deployment. A free
@@ -100,15 +101,17 @@ function parseJsonResponse(content) {
 export async function structureExtractedTextHF(text, type) {
   const instructions = EXTRACTION_INSTRUCTIONS[type] || EXTRACTION_INSTRUCTIONS.menu;
   const categoryHint = type === "menu" ? ` "category" must be exactly one of: ${MENU_CATEGORIES.join(", ")}.` : "";
+  const cuisineHint = type === "menu" ? ` "cuisine" must be exactly one of: ${CUISINES.join(", ")}.` : "";
+  const cuisineField = type === "menu" ? `,"cuisine":string` : "";
 
-  const prompt = `${instructions}${categoryHint}
+  const prompt = `${instructions}${categoryHint}${cuisineHint}
 
 Document text (from OCR, may contain minor errors):
 ${text}
 
 Respond with ONLY a JSON object of this exact shape — no markdown fences, no commentary, no extra top-level fields:
-{"items":[{"name":string,"category":string,"vegetarian":boolean,"price":number,"description":string}]}
-Omit "vegetarian" for non-food catalogs. If you don't have a description, use "" (empty string) —
+{"items":[{"name":string,"category":string${cuisineField},"vegetarian":boolean,"price":number,"description":string}]}
+Omit "vegetarian" and "cuisine" for non-food catalogs. If you don't have a description, use "" (empty string) —
 never the word null and never omit "items".`;
 
   const data = await callHFChat({

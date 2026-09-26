@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 
 const NAME_KEYS = ["name", "item", "itemname", "item name", "dish", "dish name", "title"];
 const CATEGORY_KEYS = ["category", "type", "section"];
+const CUISINE_KEYS = ["cuisine", "cuisine type"];
 const VEG_KEYS = ["vegetarian", "veg", "isveg", "is_veg", "veg/nonveg", "veg type"];
 const PRICE_KEYS = ["price", "cost", "rate", "amount"];
 const DESCRIPTION_KEYS = ["description", "desc", "details", "notes"];
@@ -87,6 +88,7 @@ export async function parseSpreadsheet(buffer, type) {
         price,
         description,
         vegetarian: parseVegetarian(findValue(rowObj, VEG_KEYS)),
+        cuisine: String(findValue(rowObj, CUISINE_KEYS) || "").trim() || undefined,
       });
     }
   }

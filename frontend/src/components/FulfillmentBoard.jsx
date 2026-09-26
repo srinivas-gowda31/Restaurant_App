@@ -17,6 +17,15 @@ const STATUS_STYLE = {
   completed: "bg-green-100 text-green-700",
 };
 
+// Set by the CrewAI ops-agent layer (agents/), not staff — absent until that service has
+// triaged a ticket, so most rows won't have one until it's run at least once.
+const PRIORITY_STYLE = {
+  low: "bg-navy-100 text-navy-950/60",
+  normal: "bg-brand-100 text-brand-600",
+  high: "bg-gold-400/20 text-gold-500",
+  urgent: "bg-red-100 text-red-700",
+};
+
 export default function FulfillmentBoard() {
   const [department, setDepartment] = useState("kitchen");
   const [tickets, setTickets] = useState(null);
@@ -67,16 +76,31 @@ export default function FulfillmentBoard() {
                 <th className="px-4 py-3">Qty</th>
                 <th className="px-4 py-3">Room</th>
                 <th className="px-4 py-3">Requested</th>
+                <th className="px-4 py-3">Priority</th>
                 <th className="px-4 py-3">Status</th>
               </tr>
             </thead>
             <tbody>
               {tickets.map((t) => (
                 <tr key={t.id} className="border-b border-brand-50 last:border-0">
-                  <td className="px-4 py-2">{t.itemName}</td>
+                  <td className="px-4 py-2">
+                    {t.itemName}
+                    {t.agentNote && <p className="text-xs italic text-navy-950/50">{t.agentNote}</p>}
+                  </td>
                   <td className="px-4 py-2">{t.quantity}</td>
                   <td className="px-4 py-2">{t.roomNumber || "-"}</td>
                   <td className="px-4 py-2">{new Date(t.createdAt).toLocaleString()}</td>
+                  <td className="px-4 py-2">
+                    {t.priority ? (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-medium ${PRIORITY_STYLE[t.priority] || "bg-navy-100"}`}
+                      >
+                        {t.priority}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-navy-950/30">-</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2">
                     <select
                       value={t.status}

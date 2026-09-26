@@ -19,6 +19,9 @@ import {
 // exactly these four sections so they stay easy to browse and extract consistently.
 export const MENU_CATEGORIES = ["Starters", "Main Course", "Desserts", "Beverages"];
 
+// Kept in sync with backend/src/cuisines.js — lets guests filter search_menu by cuisine.
+export const CUISINES = ["Indian", "Chinese", "Continental"];
+
 const TYPE_CONFIG = {
   menu: {
     label: "Item",
@@ -31,6 +34,7 @@ const TYPE_CONFIG = {
     namePlaceholder: "e.g. Paneer Tikka",
     categoryPlaceholder: "Mains",
     categoryOptions: MENU_CATEGORIES,
+    cuisineOptions: CUISINES,
   },
   spa: {
     label: "Service",
@@ -67,7 +71,7 @@ const TYPE_CONFIG = {
   },
 };
 
-const EMPTY_DRAFT = { name: "", category: "", price: "", description: "", vegetarian: true, durationMin: "", author: "" };
+const EMPTY_DRAFT = { name: "", category: "", cuisine: "", price: "", description: "", vegetarian: true, durationMin: "", author: "" };
 
 export default function MenuManagement({ type }) {
   const config = TYPE_CONFIG[type];
@@ -117,6 +121,8 @@ export default function MenuManagement({ type }) {
       if (config.extraField === "durationMin") extra.durationMin = newItem.durationMin ? Number(newItem.durationMin) : undefined;
       if (config.extraField === "author") extra.author = newItem.author.trim() || undefined;
 
+      if (config.cuisineOptions) extra.cuisine = newItem.cuisine;
+
       await config.creator({
         name: newItem.name.trim(),
         category: newItem.category.trim() || "Other",
@@ -142,7 +148,7 @@ export default function MenuManagement({ type }) {
           type="button"
           onClick={() => {
             if (!isAdding) {
-              setNewItem({ ...EMPTY_DRAFT, category: config.categoryOptions?.[0] || "" });
+              setNewItem({ ...EMPTY_DRAFT, category: config.categoryOptions?.[0] || "", cuisine: config.cuisineOptions?.[0] || "" });
             }
             setIsAdding((v) => !v);
           }}
@@ -190,6 +196,22 @@ export default function MenuManagement({ type }) {
             )}
           </div>
 
+          {config.cuisineOptions && (
+            <div className="min-w-[120px]">
+              <label className="mb-1 block text-xs font-medium text-navy-950/70">Cuisine</label>
+              <select
+                value={newItem.cuisine}
+                onChange={(e) => setNewItem((d) => ({ ...d, cuisine: e.target.value }))}
+                className="w-full rounded-lg border border-brand-200 px-3 py-2 text-sm"
+              >
+                {config.cuisineOptions.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {config.extraField === "durationMin" && (
             <div className="w-24">
               <label className="mb-1 block text-xs font-medium text-navy-950/70">Duration (min)</label>
@@ -259,6 +281,7 @@ export default function MenuManagement({ type }) {
             <tr className="border-b border-brand-100 text-xs uppercase text-navy-950/50">
               <th className="px-4 py-3">Name</th>
               <th className="px-4 py-3">Category</th>
+              {config.cuisineOptions && <th className="px-4 py-3">Cuisine</th>}
               {config.extraColumnLabel && <th className="px-4 py-3">{config.extraColumnLabel}</th>}
               <th className="px-4 py-3">Price</th>
               <th className="px-4 py-3">Status</th>
@@ -306,6 +329,25 @@ export default function MenuManagement({ type }) {
                       row.category
                     )}
                   </td>
+                  {config.cuisineOptions && (
+                    <td className="px-4 py-2">
+                      {isEditing ? (
+                        <select
+                          value={draft.cuisine || ""}
+                          onChange={(e) => setDraft((d) => ({ ...d, cuisine: e.target.value }))}
+                          className="w-full rounded border border-brand-200 px-2 py-1"
+                        >
+                          {config.cuisineOptions.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        row.cuisine || "-"
+                      )}
+                    </td>
+                  )}
                   {config.extraColumnLabel && (
                     <td className="px-4 py-2">
                       {config.extraField === "durationMin" &&
