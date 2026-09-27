@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma, DEFAULT_HOTEL_ID } from "./db.js";
 import { CUISINES } from "./cuisines.js";
+import { MENU_CATEGORIES, normalizeMenuCategory } from "./menuCategories.js";
 
 export const toolDeclarations = [
   {
@@ -12,7 +13,7 @@ export const toolDeclarations = [
       type: "object",
       properties: {
         query: { type: "string", description: "Free-text term against name/description." },
-        category: { type: "string", description: "e.g. Starters, Mains, Desserts, Beverages." },
+        category: { type: "string", description: `One of: ${MENU_CATEGORIES.join(", ")}.`, enum: MENU_CATEGORIES },
         cuisine: { type: "string", description: `One of: ${CUISINES.join(", ")}.`, enum: CUISINES },
         vegetarian: { type: "boolean", description: "true=veg-only, false=non-veg-only." },
       },
@@ -152,7 +153,14 @@ async function searchMenu({ query, category, cuisine, vegetarian }) {
   const extraConditions = [];
   if (typeof vegetarian === "boolean") extraConditions.push(Prisma.sql`vegetarian = ${vegetarian}`);
   if (cuisine) extraConditions.push(Prisma.sql`cuisine ILIKE ${cuisine}`);
-  const items = await fuzzyCatalogSearch("MenuItem", { query, category, extraConditions });
+  // Normalized rather than passed through as-is — the category filter below is an exact
+  // match, so an off-by-a-word guess (e.g. "Mains" instead of the canonical "Main Course")
+  // would otherwise silently match almost nothing instead of the intended category. This is
+  // exactly the bug that made "vegetarian mains" return 2 items instead of 100+: a stray
+  // legacy row literally labeled "Mains" matched, every correctly-labeled "Main Course" row
+  // didn't. Normalizing here means any near-miss category value still resolves correctly.
+  const normalizedCategory = category ? normalizeMenuCategory(category) : undefined;
+  const items = await fuzzyCatalogSearch("MenuItem", { query, category: normalizedCategory, extraConditions });
   return { items };
 }
 
