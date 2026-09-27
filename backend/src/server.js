@@ -20,14 +20,23 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 // ALLOWED_ORIGIN restricts CORS to the real frontend origin(s) in production (comma-separated
-// for more than one). Left unset, it stays open — fine for local dev, not for prod.
+// for more than one). Left unset in development, it stays open for convenience. Left unset
+// with NODE_ENV=production, fail closed instead — an open-to-any-origin API in production is
+// a real vulnerability (any website's JS could call it as the logged-in browser), and it's
+// safer to refuse every cross-origin request at startup than to silently allow all of them.
 const allowedOrigins = process.env.ALLOWED_ORIGIN?.split(",").map((o) => o.trim());
+const isProduction = process.env.NODE_ENV === "production";
 if (!allowedOrigins) {
-  console.warn("ALLOWED_ORIGIN is not set — CORS is open to any origin. Set it before going to production.");
+  if (isProduction) {
+    console.error("ALLOWED_ORIGIN is not set in production — CORS will reject all cross-origin requests until it's configured.");
+  } else {
+    console.warn("ALLOWED_ORIGIN is not set — CORS is open to any origin. Set it before going to production.");
+  }
 }
+const corsOrigin = allowedOrigins || (isProduction ? false : true);
 
 // Let browsers cache the CORS preflight so repeated chat requests skip the extra OPTIONS round-trip.
-app.use(cors({ origin: allowedOrigins || true, maxAge: 86400 }));
+app.use(cors({ origin: corsOrigin, maxAge: 86400 }));
 app.use(express.json({ limit: "5mb" }));
 
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));

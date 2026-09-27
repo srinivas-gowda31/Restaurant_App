@@ -203,15 +203,13 @@ async function resolveItem(name) {
 
 // The model was asked to "track the cart yourself" and recite running totals from memory —
 // it kept getting the arithmetic wrong (e.g. summing 3 items as if there were only 2). Cart
-// state now lives here instead, and every add/remove/get returns the authoritative total so
-// the model only ever has to repeat a number back, never compute one. Keyed by sessionId, so
-// it's shared between text and voice within the same guest visit; in-memory like the
-// frontend's own cart, so it doesn't survive a server restart — not a regression from today.
-const cartsBySession = new Map();
-
-function getCart(sessionId) {
-  if (!cartsBySession.has(sessionId)) cartsBySession.set(sessionId, []);
-  return cartsBySession.get(sessionId);
+// state lives here instead, and every add/remove/get returns the authoritative total so the
+// model only ever has to repeat a number back, never compute one. Persisted in Postgres
+// (CartItem, keyed by sessionId) rather than an in-memory Map — a guest's in-progress cart
+// used to vanish on every server restart/redeploy, and a single-process Map can't be shared
+// if this backend ever runs as more than one instance.
+async function getCart(sessionId) {
+  return prisma.cartItem.findMany({ where: { sessionId }, orderBy: { createdAt: "asc" } });
 }
 
 function cartSummary(cart) {
@@ -226,11 +224,28 @@ async function addToOrder({ name, quantity = 1 }, sessionId) {
   if (!resolved) return { success: false, message: `Could not find an item named "${name}".` };
 
   const qty = Number.isFinite(quantity) && quantity > 0 ? Math.floor(quantity) : 1;
-  const cart = getCart(sessionId);
-  const existing = cart.find((i) => i.name.toLowerCase() === name.toLowerCase());
-  if (existing) existing.quantity += qty;
-  else cart.push({ name, quantity: qty, unitPrice: resolved.unitPrice, department: resolved.department });
+  const existing = await prisma.cartItem.findFirst({
+    where: { sessionId, name: { equals: name, mode: "insensitive" } },
+  });
+  if (existing) {
+    await prisma.cartItem.update({ where: { id: existing.id }, data: { quantity: existing.quantity + qty } });
+  } else {
+    await prisma.cartItem.create({
+      data: {
+        sessionId,
+        name,
+        quantity: qty,
+        unitPrice: resolved.unitPrice,
+        department: resolved.department,
+        menuItemId: resolved.menuItemId || null,
+        spaServiceId: resolved.spaServiceId || null,
+        housekeepingItemId: resolved.housekeepingItemId || null,
+        libraryItemId: resolved.libraryItemId || null,
+      },
+    });
+  }
 
+  const cart = await getCart(sessionId);
   return {
     success: true,
     cartAction: { type: "add", name, quantity: qty, unitPrice: resolved.unitPrice, department: resolved.department },
@@ -239,10 +254,9 @@ async function addToOrder({ name, quantity = 1 }, sessionId) {
 }
 
 async function removeFromOrder({ name }, sessionId) {
-  const cart = getCart(sessionId);
-  const idx = cart.findIndex((i) => i.name.toLowerCase() === name.toLowerCase());
-  if (idx !== -1) cart.splice(idx, 1);
+  await prisma.cartItem.deleteMany({ where: { sessionId, name: { equals: name, mode: "insensitive" } } });
 
+  const cart = await getCart(sessionId);
   return {
     success: true,
     cartAction: { type: "remove", name },
@@ -251,7 +265,7 @@ async function removeFromOrder({ name }, sessionId) {
 }
 
 async function getCartTool(sessionId) {
-  return { success: true, ...cartSummary(getCart(sessionId)) };
+  return { success: true, ...cartSummary(await getCart(sessionId)) };
 }
 
 const DEPARTMENT_TABLE = {
@@ -265,7 +279,7 @@ async function confirmOrder({ guestName, roomNumber }, sessionId) {
   // The cart the model has been building via add_to_order/remove_from_order is the
   // authoritative source — not whatever the model might separately claim the order is,
   // which is exactly what was producing wrong totals when it recomputed from memory.
-  const cart = getCart(sessionId);
+  const cart = await getCart(sessionId);
   if (cart.length === 0) {
     return { success: false, message: "Cannot confirm an empty order." };
   }
@@ -342,7 +356,7 @@ async function confirmOrder({ guestName, roomNumber }, sessionId) {
     })
   );
 
-  cartsBySession.delete(sessionId);
+  await prisma.cartItem.deleteMany({ where: { sessionId } });
 
   return {
     success: true,

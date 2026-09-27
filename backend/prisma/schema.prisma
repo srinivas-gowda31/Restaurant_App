@@ -53,6 +53,7 @@ model MenuItem {
 
   hotel      Hotel       @relation(fields: [hotelId], references: [id])
   orderItems OrderItem[]
+  cartItems  CartItem[]
 
   @@index([hotelId])
 }
@@ -71,6 +72,7 @@ model SpaService {
 
   hotel      Hotel       @relation(fields: [hotelId], references: [id])
   orderItems OrderItem[]
+  cartItems  CartItem[]
 
   @@index([hotelId])
 }
@@ -88,6 +90,7 @@ model HousekeepingItem {
 
   hotel      Hotel       @relation(fields: [hotelId], references: [id])
   orderItems OrderItem[]
+  cartItems  CartItem[]
 
   @@index([hotelId])
 }
@@ -106,6 +109,7 @@ model LibraryItem {
 
   hotel      Hotel       @relation(fields: [hotelId], references: [id])
   orderItems OrderItem[]
+  cartItems  CartItem[]
 
   @@index([hotelId])
 }
@@ -138,6 +142,7 @@ model Session {
   orders     Order[]
   tokenUsages TokenUsage[]
   frontDeskAlerts FrontDeskAlert[]
+  cartItems  CartItem[]
 }
 
 model ChatMessage {
@@ -200,6 +205,31 @@ model OrderItem {
   libraryItem      LibraryItem?      @relation(fields: [libraryItemId], references: [id])
 
   @@index([orderId])
+}
+
+// A guest's in-progress order before confirm_order — persisted (not in-memory) so it survives
+// a server restart/redeploy, and works if the backend ever runs as more than one instance.
+// Mirrors OrderItem's shape since confirmOrder converts one into the other.
+model CartItem {
+  id                 String  @id @default(cuid())
+  sessionId          String
+  menuItemId         String?
+  spaServiceId       String?
+  housekeepingItemId String?
+  libraryItemId      String?
+  department         String  @default("kitchen")
+  name               String
+  quantity           Int     @default(1)
+  unitPrice          Float
+  createdAt          DateTime @default(now())
+
+  session          Session           @relation(fields: [sessionId], references: [id])
+  menuItem         MenuItem?         @relation(fields: [menuItemId], references: [id])
+  spaService       SpaService?       @relation(fields: [spaServiceId], references: [id])
+  housekeepingItem HousekeepingItem? @relation(fields: [housekeepingItemId], references: [id])
+  libraryItem      LibraryItem?      @relation(fields: [libraryItemId], references: [id])
+
+  @@index([sessionId])
 }
 
 model KitchenTicket {
