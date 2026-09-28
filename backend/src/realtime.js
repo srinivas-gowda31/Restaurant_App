@@ -364,7 +364,19 @@ export function attachRealtimeProxy(httpServer) {
             console.error(`[Realtime] Failed to parse function call args for ${name}:`, parseErr.message);
           }
 
-          const result = await executeTool(name, args, { sessionId });
+          // Without this, a thrown error here (a DB hiccup, anything) left Azure waiting
+          // forever for a function_call_output that would never arrive — the call would go
+          // silent for the guest until the 30s idle timeout eventually killed it with an
+          // unrelated-looking "Call ended due to inactivity". Always answering the function
+          // call — success or failure — keeps the conversation able to continue either way,
+          // exactly like the chat path already degrades gracefully via its outer try/catch.
+          let result;
+          try {
+            result = await executeTool(name, args, { sessionId });
+          } catch (err) {
+            console.error(`[Realtime] Tool "${name}" failed:`, err.message);
+            result = { success: false, message: "Sorry, something went wrong on my end — could you try that again?" };
+          }
 
           if (result.cartAction) uiHints.cartActions.push(result.cartAction);
           if (result.orderId) uiHints.orderId = result.orderId;
