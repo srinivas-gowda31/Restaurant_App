@@ -1,11 +1,18 @@
 function ItemsTable({ itemsTable, onAddItem }) {
-  const { type, items } = itemsTable;
+  const { type, items, totalMatches } = itemsTable;
   const isSpa = type === "spa";
 
   if (!items || items.length === 0) return null;
 
+  const hasMore = typeof totalMatches === "number" && totalMatches > items.length;
+
   return (
     <div className="mt-2 overflow-x-auto rounded-lg border border-brand-100">
+      {hasMore && (
+        <div className="border-b border-brand-100 bg-brand-50 px-3 py-1.5 text-xs text-navy-950/60">
+          Showing {items.length} of {totalMatches} — ask to narrow it down (e.g. by cuisine or veg/non-veg) to see more.
+        </div>
+      )}
       <table className="w-full min-w-[380px] text-left text-xs sm:text-sm">
         <thead>
           <tr className="border-b border-brand-100 bg-brand-50 text-navy-950/60">

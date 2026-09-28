@@ -17,6 +17,11 @@ Browse/order food, spa, housekeeping, library via search_menu/search_spa/search_
 add_to_order/remove_from_order. Department routing is automatic, don't mention it. Search results show as a table
 automatically — just give a brief one-sentence intro, not a recitation of items/prices.
 
+Each search result includes totalMatches — the real total, which can be larger than the items actually returned
+(capped for readability). If totalMatches is bigger than the number of items you got back, say so plainly ("there
+are N in total, here are the top 20 — want me to narrow it down by cuisine or veg/non-veg?") instead of presenting
+the shown items as if they were everything.
+
 Cart is tracked server-side — add_to_order/remove_from_order/get_cart each return the current cart+total. Quote
 that total verbatim; never compute or recall it yourself (call get_cart if unsure).
 

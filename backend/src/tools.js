@@ -116,11 +116,18 @@ export const toolDeclarations = [
   },
 ];
 
+const RESULT_LIMIT = 20;
+
 /**
  * Fuzzy/typo-tolerant catalog search shared by all four catalogs. A free-text query uses
  * trigram similarity (pg_trgm) so plurals, typos, and imperfect voice transcriptions
  * ("water bottles" vs. "Water Bottle", "buttar chicken" vs. "Butter Chicken") still find
  * the right item instead of requiring an exact substring match.
+ *
+ * Always returns totalCount alongside the (capped) items — a broad browse-by-category
+ * query can genuinely match 100+ rows, and silently truncating to RESULT_LIMIT with no
+ * signal that anything was cut looks identical to "that's everything" from the guest's
+ * side. The model/UI can only offer to narrow the search down if they know there's more.
  */
 async function fuzzyCatalogSearch(tableName, { query, category, extraConditions = [] } = {}) {
   const trimmedQuery = query?.trim();
@@ -131,22 +138,24 @@ async function fuzzyCatalogSearch(tableName, { query, category, extraConditions 
     ...extraConditions,
   ];
   if (category) conditions.push(Prisma.sql`category ILIKE ${category}`);
-
   if (trimmedQuery) {
     conditions.push(Prisma.sql`(name ILIKE ${"%" + trimmedQuery + "%"} OR similarity(name, ${trimmedQuery}) > 0.2)`);
-    return prisma.$queryRaw(Prisma.sql`
-      SELECT * FROM ${table}
-      WHERE ${Prisma.join(conditions, " AND ")}
-      ORDER BY similarity(name, ${trimmedQuery}) DESC
-      LIMIT 20
-    `);
   }
+  const whereClause = Prisma.join(conditions, " AND ");
 
-  return prisma.$queryRaw(Prisma.sql`
-    SELECT * FROM ${table}
-    WHERE ${Prisma.join(conditions, " AND ")}
-    LIMIT 20
-  `);
+  const orderClause = trimmedQuery ? Prisma.sql`ORDER BY similarity(name, ${trimmedQuery}) DESC` : Prisma.empty;
+
+  const [items, countRows] = await Promise.all([
+    prisma.$queryRaw(Prisma.sql`
+      SELECT * FROM ${table}
+      WHERE ${whereClause}
+      ${orderClause}
+      LIMIT ${RESULT_LIMIT}
+    `),
+    prisma.$queryRaw(Prisma.sql`SELECT COUNT(*)::int AS count FROM ${table} WHERE ${whereClause}`),
+  ]);
+
+  return { items, totalCount: countRows[0].count };
 }
 
 async function searchMenu({ query, category, cuisine, vegetarian }) {
@@ -160,23 +169,23 @@ async function searchMenu({ query, category, cuisine, vegetarian }) {
   // legacy row literally labeled "Mains" matched, every correctly-labeled "Main Course" row
   // didn't. Normalizing here means any near-miss category value still resolves correctly.
   const normalizedCategory = category ? normalizeMenuCategory(category) : undefined;
-  const items = await fuzzyCatalogSearch("MenuItem", { query, category: normalizedCategory, extraConditions });
-  return { items };
+  const { items, totalCount } = await fuzzyCatalogSearch("MenuItem", { query, category: normalizedCategory, extraConditions });
+  return { items, totalMatches: totalCount };
 }
 
 async function searchSpa({ query, category }) {
-  const services = await fuzzyCatalogSearch("SpaService", { query, category });
-  return { services };
+  const { items, totalCount } = await fuzzyCatalogSearch("SpaService", { query, category });
+  return { services: items, totalMatches: totalCount };
 }
 
 async function searchHousekeeping({ query, category }) {
-  const items = await fuzzyCatalogSearch("HousekeepingItem", { query, category });
-  return { items };
+  const { items, totalCount } = await fuzzyCatalogSearch("HousekeepingItem", { query, category });
+  return { items, totalMatches: totalCount };
 }
 
 async function searchLibrary({ query, category }) {
-  const items = await fuzzyCatalogSearch("LibraryItem", { query, category });
-  return { items };
+  const { items, totalCount } = await fuzzyCatalogSearch("LibraryItem", { query, category });
+  return { items, totalMatches: totalCount };
 }
 
 /**
@@ -409,7 +418,7 @@ export function buildItemsTable(toolName, result) {
   if (!mapping) return null;
   const items = result[mapping.key];
   if (!items) return null;
-  return { type: mapping.type, items };
+  return { type: mapping.type, items, totalMatches: result.totalMatches };
 }
 
 // Only the fields the model actually reasons over — item resolution happens by name
