@@ -1,4 +1,15 @@
-export default function OrderPanel({ items, total, onUpdateQuantity, onRemove, onConfirm, isOpen, onClose, disabled }) {
+export default function OrderPanel({
+  items,
+  total,
+  confirmedTotal = 0,
+  confirmedOrderCount = 0,
+  onUpdateQuantity,
+  onRemove,
+  onConfirm,
+  isOpen,
+  onClose,
+  disabled,
+}) {
   const content = (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-brand-100 px-4 py-3">
@@ -53,8 +64,16 @@ export default function OrderPanel({ items, total, onUpdateQuantity, onRemove, o
       </div>
 
       <div className="border-t border-brand-100 px-4 py-3 space-y-3">
+        {confirmedOrderCount > 0 && (
+          <div className="flex items-center justify-between rounded-lg bg-green-50 px-3 py-2 text-xs text-green-800">
+            <span>
+              Confirmed this visit ({confirmedOrderCount} order{confirmedOrderCount > 1 ? "s" : ""})
+            </span>
+            <span className="font-medium">₹{confirmedTotal.toFixed(0)}</span>
+          </div>
+        )}
         <div className="flex items-center justify-between text-sm font-semibold text-navy-950">
-          <span>Total</span>
+          <span>{confirmedOrderCount > 0 ? "Current order" : "Total"}</span>
           <span>₹{total.toFixed(0)}</span>
         </div>
         <button

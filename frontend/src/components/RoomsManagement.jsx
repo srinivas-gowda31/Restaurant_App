@@ -1,17 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { QRCodeCanvas } from "qrcode.react";
 import LoadingSpinner from "./LoadingSpinner.jsx";
-import { fetchAdminRooms, createRoom, updateRoom, deleteRoom } from "../services/api.js";
+import { fetchAdminRooms, createRoom, updateRoom, deleteRoom, fetchAdminHotel } from "../services/api.js";
 
-// Encodes both the room number and the current guest's name so scanning the code greets
-// the guest by name immediately, with no extra round-trip needed before the first paint.
-function roomQrUrl(number, guestName) {
+// Encodes the hotel's own slug alongside the room number and guest name — without it, a
+// multi-hotel deployment couldn't tell WHICH hotel's room/catalog a scan should even resolve
+// against (room numbers are only unique within a hotel, not globally). Scanning the code still
+// greets the guest by name immediately either way, with no extra round-trip before first paint.
+function roomQrUrl(number, guestName, hotelSlug) {
   const params = new URLSearchParams({ room: number });
   if (guestName) params.set("guest", guestName);
+  if (hotelSlug) params.set("hotel", hotelSlug);
   return `${window.location.origin}/?${params.toString()}`;
 }
 
-function RoomQrCode({ number, guestName }) {
+function RoomQrCode({ number, guestName, hotelSlug }) {
   const canvasRef = useRef(null);
 
   const download = () => {
@@ -26,7 +29,7 @@ function RoomQrCode({ number, guestName }) {
   return (
     <div className="flex items-center gap-2">
       <div ref={canvasRef}>
-        <QRCodeCanvas value={roomQrUrl(number, guestName)} size={64} />
+        <QRCodeCanvas value={roomQrUrl(number, guestName, hotelSlug)} size={64} />
       </div>
       <button type="button" onClick={download} className="text-xs text-brand-600 hover:underline">
         Download
@@ -45,6 +48,7 @@ export default function RoomsManagement() {
   const [isAdding, setIsAdding] = useState(false);
   const [newRoom, setNewRoom] = useState(EMPTY_DRAFT);
   const [addError, setAddError] = useState(null);
+  const [hotelSlug, setHotelSlug] = useState(null);
 
   const load = () => {
     fetchAdminRooms()
@@ -53,6 +57,13 @@ export default function RoomsManagement() {
   };
 
   useEffect(load, []);
+  useEffect(() => {
+    fetchAdminHotel()
+      .then((data) => setHotelSlug(data.hotel?.slug || null))
+      .catch(() => {
+        // Non-fatal — QR codes just fall back to no ?hotel= param (the default hotel).
+      });
+  }, []);
 
   const startEdit = (room) => {
     setEditingId(room.id);
@@ -180,7 +191,7 @@ export default function RoomsManagement() {
                     )}
                   </td>
                   <td className="px-4 py-2">
-                    <RoomQrCode number={room.number} guestName={room.guestName} />
+                    <RoomQrCode number={room.number} guestName={room.guestName} hotelSlug={hotelSlug} />
                   </td>
                   <td className="px-4 py-2 whitespace-nowrap">
                     {isEditing ? (

@@ -42,6 +42,36 @@ export async function sendChatMessage(sessionId, message) {
   return handleResponse(res);
 }
 
+// Backs the order panel's direct controls (Add button, +/- steppers, remove) — these go
+// through the same server-side cart tools.js the chatbot uses, instead of only touching local
+// display state (which used to mean an item added this way never actually got ordered).
+function cartFetch(path, data) {
+  return fetch(`${BASE_URL}/cart${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }).then(handleResponse);
+}
+
+export function addToCart(sessionId, name, quantity) {
+  return cartFetch("/add", { sessionId, name, quantity });
+}
+
+export function removeFromCart(sessionId, name) {
+  return cartFetch("/remove", { sessionId, name });
+}
+
+export function setCartItemQuantity(sessionId, name, quantity) {
+  return cartFetch("/quantity", { sessionId, name, quantity });
+}
+
+// Confirms the order directly against the server's actual cart — deliberately NOT a chat message
+// describing the cart in free text (see GuestPage.jsx's handleConfirmOrder for the duplicate-order
+// bug that caused).
+export function confirmOrder(sessionId, guestName, roomNumber) {
+  return cartFetch("/confirm", { sessionId, guestName, roomNumber });
+}
+
 export async function fetchMenu() {
   const res = await fetch(`${BASE_URL}/menu`);
   return handleResponse(res);
@@ -72,22 +102,41 @@ async function withRetry(fn, { retries = 3, delayMs = 800 } = {}) {
   }
 }
 
-export async function fetchRoomByNumber(number) {
+// hotel (a slug) matters here specifically — room numbers are only unique WITHIN a hotel, not
+// globally, so without it "Room 204" could resolve to a different hotel's room entirely.
+export async function fetchRoomByNumber(number, hotel) {
   return withRetry(async () => {
-    const res = await fetch(`${BASE_URL}/rooms/${encodeURIComponent(number)}`);
+    const params = hotel ? `?hotel=${encodeURIComponent(hotel)}` : "";
+    const res = await fetch(`${BASE_URL}/rooms/${encodeURIComponent(number)}${params}`);
     return handleResponse(res);
   });
 }
 
-export async function registerGuestSession(sessionId, roomNumber, guestName) {
+export async function registerGuestSession(sessionId, roomNumber, guestName, hotel) {
   return withRetry(async () => {
     const res = await fetch(`${BASE_URL}/session/guest-info`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, roomNumber, guestName }),
+      body: JSON.stringify({ sessionId, roomNumber, guestName, hotel }),
     });
     return handleResponse(res);
   });
+}
+
+// Public, read-only — lets the guest page show the right hotel's own name/branding instead of a
+// hardcoded one, for a multi-hotel deployment.
+export async function fetchHotelInfo(hotel) {
+  const params = hotel ? `?hotel=${encodeURIComponent(hotel)}` : "";
+  const res = await fetch(`${BASE_URL}/session/hotel-info${params}`);
+  return handleResponse(res);
+}
+
+// Re-hydrates the on-screen transcript from what's already durably logged server-side, so a
+// page reload/remount doesn't leave the guest staring at a blank chat after a real conversation
+// already happened — the messages themselves were already being saved, this just reads them back.
+export async function getSessionMessages(sessionId) {
+  const res = await fetch(`${BASE_URL}/session/${encodeURIComponent(sessionId)}/messages`);
+  return handleResponse(res);
 }
 
 // Checks a candidate admin key against the server without needing any other endpoint to
@@ -189,6 +238,21 @@ export async function fetchFrontDeskAlerts() {
 
 export async function updateFrontDeskAlertStatus(id, status) {
   return adminJson(`/admin/front-desk-alerts/${id}`, "PATCH", { status });
+}
+
+export async function fetchConciergeRequests() {
+  return adminFetch("/admin/concierge-requests");
+}
+
+export async function updateConciergeRequestStatus(id, status) {
+  return adminJson(`/admin/concierge-requests/${id}`, "PATCH", { status });
+}
+
+// Identifies which hotel this admin key belongs to — used to embed the right ?hotel= slug into
+// this hotel's own room QR codes, so a multi-hotel deployment never mixes one hotel's QR codes
+// up with another's.
+export async function fetchAdminHotel() {
+  return adminFetch("/admin/hotel");
 }
 
 export async function fetchTokenUsage() {

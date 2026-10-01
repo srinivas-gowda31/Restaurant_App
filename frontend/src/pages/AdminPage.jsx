@@ -8,9 +8,9 @@ import MenuManagement from "../components/MenuManagement.jsx";
 import RoomsManagement from "../components/RoomsManagement.jsx";
 import OrdersTable from "../components/OrdersTable.jsx";
 import FulfillmentBoard from "../components/FulfillmentBoard.jsx";
-import TokenUsage from "../components/TokenUsage.jsx";
 import FrontDeskAlerts from "../components/FrontDeskAlerts.jsx";
-import { fetchUploads } from "../services/api.js";
+import ConciergeRequests from "../components/ConciergeRequests.jsx";
+import { fetchUploads, fetchAdminHotel } from "../services/api.js";
 
 const TABS = [
   { id: "uploads", label: "Uploads" },
@@ -22,7 +22,7 @@ const TABS = [
   { id: "orders", label: "Orders" },
   { id: "fulfillment", label: "Fulfillment" },
   { id: "frontdesk", label: "Front Desk" },
-  { id: "usage", label: "Usage" },
+  { id: "concierge", label: "Concierge" },
 ];
 
 function UploadsTab() {
@@ -117,43 +117,86 @@ function UploadsTab() {
   );
 }
 
+const TAB_ICONS = {
+  uploads: "⇪",
+  rooms: "🛏",
+  menu: "🍽",
+  spa: "💆",
+  housekeeping: "🧹",
+  library: "📖",
+  orders: "🧾",
+  fulfillment: "🛎",
+  frontdesk: "🔔",
+  concierge: "🧳",
+};
+
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState("uploads");
+  const [hotelName, setHotelName] = useState(null);
+  const activeLabel = TABS.find((t) => t.id === activeTab)?.label;
+
+  // Runs on initial mount (works fine for a returning admin whose key is already saved) AND
+  // whenever AdminLoginGate reports a fresh login — a first-time login has no key yet on mount,
+  // so this effect's initial call would otherwise 401 and never get a real chance to retry.
+  const loadHotel = () => {
+    fetchAdminHotel()
+      .then((data) => setHotelName(data.hotel?.name || null))
+      .catch(() => {
+        // Non-fatal — the dashboard just omits the hotel name if this fails.
+      });
+  };
+  useEffect(loadHotel, []);
 
   return (
-    <AdminLoginGate>
+    <AdminLoginGate onUnlock={loadHotel}>
       <div className="min-h-screen bg-brand-50">
-        <Header />
-        <main className="mx-auto max-w-6xl px-4 py-6">
-          <h1 className="mb-4 font-serif text-2xl font-bold text-navy-950">Admin Dashboard</h1>
+        <Header hotelName={hotelName} />
 
-          <div className="mb-6 flex gap-1 border-b border-brand-100">
+        <div className="border-b border-white/10 bg-navy-950 text-white">
+          <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
+            <span className="text-[11px] font-medium uppercase tracking-[0.3em] text-gold-400/90">
+              Back of House{hotelName ? ` — ${hotelName}` : ""}
+            </span>
+            <h1 className="mt-1.5 font-serif text-2xl font-bold sm:text-3xl">Admin Dashboard</h1>
+            <p className="mt-1 text-sm text-white/60">Manage menus, rooms, orders and guest requests.</p>
+          </div>
+        </div>
+
+        <div className="sticky top-0 z-20 border-b border-brand-100 bg-white/95 backdrop-blur">
+          <nav className="mx-auto flex max-w-6xl gap-2 overflow-x-auto px-4 py-3 scrollbar-thin sm:px-6">
             {TABS.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2 text-sm font-medium transition-colors ${
+                className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium transition-colors ${
                   activeTab === tab.id
-                    ? "border-b-2 border-brand-600 text-brand-600"
-                    : "text-navy-950/60 hover:text-navy-950"
+                    ? "bg-navy-950 text-white shadow-sm"
+                    : "bg-brand-50 text-navy-950/60 hover:bg-brand-100 hover:text-navy-950"
                 }`}
               >
+                <span aria-hidden="true">{TAB_ICONS[tab.id]}</span>
                 {tab.label}
               </button>
             ))}
-          </div>
+          </nav>
+        </div>
 
-          {activeTab === "uploads" && <UploadsTab />}
-          {activeTab === "rooms" && <RoomsManagement />}
-          {activeTab === "menu" && <MenuManagement type="menu" />}
-          {activeTab === "spa" && <MenuManagement type="spa" />}
-          {activeTab === "housekeeping" && <MenuManagement type="housekeeping" />}
-          {activeTab === "library" && <MenuManagement type="library" />}
-          {activeTab === "orders" && <OrdersTable />}
-          {activeTab === "fulfillment" && <FulfillmentBoard />}
-          {activeTab === "frontdesk" && <FrontDeskAlerts />}
-          {activeTab === "usage" && <TokenUsage />}
+        <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
+          <div className="rounded-2xl border border-brand-100 bg-white p-4 shadow-sm sm:p-6">
+            <h2 className="mb-4 font-serif text-lg font-bold text-navy-950">{activeLabel}</h2>
+
+            {activeTab === "uploads" && <UploadsTab />}
+            {activeTab === "rooms" && <RoomsManagement />}
+            {activeTab === "menu" && <MenuManagement type="menu" />}
+            {activeTab === "spa" && <MenuManagement type="spa" />}
+            {activeTab === "housekeeping" && <MenuManagement type="housekeeping" />}
+            {activeTab === "library" && <MenuManagement type="library" />}
+            {activeTab === "orders" && <OrdersTable />}
+            {activeTab === "fulfillment" && <FulfillmentBoard />}
+            {activeTab === "frontdesk" && <FrontDeskAlerts />}
+            {activeTab === "concierge" && <ConciergeRequests />}
+          </div>
         </main>
       </div>
     </AdminLoginGate>

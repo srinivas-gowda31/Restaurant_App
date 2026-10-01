@@ -2,7 +2,7 @@ import { useState } from "react";
 import { getAdminKey, setAdminKey } from "../services/adminAuth.js";
 import { verifyAdminKey } from "../services/api.js";
 
-export default function AdminLoginGate({ children }) {
+export default function AdminLoginGate({ children, onUnlock }) {
   const [unlocked, setUnlocked] = useState(() => Boolean(getAdminKey()));
   const [input, setInput] = useState("");
   const [error, setError] = useState(null);
@@ -21,6 +21,10 @@ export default function AdminLoginGate({ children }) {
       }
       setAdminKey(input.trim());
       setUnlocked(true);
+      // The parent's own effects (e.g. fetching which hotel this key belongs to) ran once on
+      // mount, before a key existed yet — a fresh login here needs a way to tell it to retry
+      // now that one actually does, since the parent itself never re-mounts from this.
+      onUnlock?.();
     } catch {
       setError("Could not reach the server. Try again.");
     } finally {

@@ -4,53 +4,34 @@ export function useOrder() {
   const [items, setItems] = useState([]);
   const [orderConfirmed, setOrderConfirmed] = useState(false);
   const [confirmedOrderId, setConfirmedOrderId] = useState(null);
+  const [confirmedOrderCount, setConfirmedOrderCount] = useState(0);
+  // Sum of every order actually PLACED this visit (separate from `total`, which is only the
+  // current in-progress cart) — a guest can place more than one order in the same call, and
+  // without this the panel only ever showed whatever the most recent order happened to be,
+  // with no way to see everything they've actually been charged for so far.
+  const [confirmedTotal, setConfirmedTotal] = useState(0);
 
-  const applyCartAction = useCallback((action) => {
-    if (!action) return;
-
-    setItems((prev) => {
-      if (action.type === "add") {
-        const existing = prev.find((i) => i.name === action.name);
-        const qty = action.quantity || 1;
-        if (existing) {
-          return prev.map((i) =>
-            i.name === action.name ? { ...i, quantity: i.quantity + qty } : i
-          );
-        }
-        return [...prev, { name: action.name, quantity: qty, unitPrice: action.unitPrice }];
-      }
-
-      if (action.type === "remove") {
-        return prev.filter((i) => i.name !== action.name);
-      }
-
-      if (action.type === "clear") {
-        return [];
-      }
-
-      return prev;
-    });
-  }, []);
-
-  const updateQuantity = useCallback((name, quantity) => {
-    setItems((prev) =>
-      quantity <= 0
-        ? prev.filter((i) => i.name !== name)
-        : prev.map((i) => (i.name === name ? { ...i, quantity } : i))
-    );
-  }, []);
-
-  const removeItem = useCallback((name) => {
-    setItems((prev) => prev.filter((i) => i.name !== name));
+  // Replaces the whole local cart with the server's real one, rather than replaying deltas —
+  // see GuestPage.jsx's handleUiHints for why (a real desync bug where two items added in one
+  // turn only showed one in this panel, even though the deltas themselves looked correct).
+  const setCartSnapshot = useCallback((cart) => {
+    const nextItems = cart?.items?.map((i) => ({ name: i.name, quantity: i.quantity, unitPrice: i.unitPrice })) || [];
+    setItems(nextItems);
+    // A guest can place more than one order in the same call now (confirm, then "yes, add
+    // more"), so the "order confirmed" banner needs to clear itself the moment a fresh item
+    // lands, rather than sticking around from the previous order.
+    if (nextItems.length > 0) setOrderConfirmed(false);
   }, []);
 
   const clearOrder = useCallback(() => {
     setItems([]);
   }, []);
 
-  const markConfirmed = useCallback((orderId) => {
+  const markConfirmed = useCallback((orderId, orderTotal) => {
     setOrderConfirmed(true);
     setConfirmedOrderId(orderId);
+    setConfirmedOrderCount((n) => n + 1);
+    if (typeof orderTotal === "number") setConfirmedTotal((sum) => sum + orderTotal);
     setItems([]);
   }, []);
 
@@ -64,9 +45,9 @@ export function useOrder() {
     total,
     orderConfirmed,
     confirmedOrderId,
-    applyCartAction,
-    updateQuantity,
-    removeItem,
+    confirmedOrderCount,
+    confirmedTotal,
+    setCartSnapshot,
     clearOrder,
     markConfirmed,
   };
