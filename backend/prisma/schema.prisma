@@ -10,12 +10,24 @@ datasource db {
 model Hotel {
   id        String   @id @default(cuid())
   name      String
+  // URL-safe identifier a guest's QR code / session carries (?hotel=<slug>) so one shared
+  // database can serve many hotels while each guest/session/order only ever touches its own
+  // hotel's rows — this is the "different hotels with different data" requirement, done as
+  // tenant-scoping rather than one physical database per hotel (simpler to run, standard
+  // practice, and the schema already had hotelId on every table before this even existed).
+  slug      String   @unique
+  // Replaces the single global ADMIN_API_KEY — each hotel's admin panel authenticates with
+  // its OWN key, looked up here, so one hotel's staff can never see another hotel's data
+  // through the admin panel either. The original ADMIN_API_KEY value is preserved here for
+  // the pre-existing default hotel so nothing already deployed breaks.
+  adminApiKey String @unique
   createdAt DateTime @default(now())
 
   menuItems         MenuItem[]
   spaServices       SpaService[]
   housekeepingItems HousekeepingItem[]
   libraryItems      LibraryItem[]
+  conciergeRequests ConciergeRequest[]
   uploads           Upload[]
   sessions          Session[]
   orders            Order[]
@@ -44,6 +56,8 @@ model MenuItem {
   name        String
   category    String
   cuisine     String?
+  breakfast   Boolean  @default(false)
+  snack       Boolean  @default(false)
   vegetarian  Boolean  @default(true)
   price       Float
   description String?
@@ -142,6 +156,7 @@ model Session {
   orders     Order[]
   tokenUsages TokenUsage[]
   frontDeskAlerts FrontDeskAlert[]
+  conciergeRequests ConciergeRequest[]
   cartItems  CartItem[]
 }
 
@@ -313,6 +328,32 @@ model FrontDeskAlert {
   status     String   @default("open") // "open" | "acknowledged" | "resolved"
   createdAt  DateTime @default(now())
   // Set by the CrewAI ops-agent layer (agents/) — may upgrade urgency after re-assessing.
+  agentNote  String?
+
+  hotel   Hotel   @relation(fields: [hotelId], references: [id])
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([hotelId])
+  @@index([sessionId])
+}
+
+// A real 5-star hotel's concierge desk: transportation/cab booking, tours/sightseeing,
+// external restaurant reservations, currency exchange, courier/package requests — genuinely
+// different from FrontDeskAlert (facility issues/complaints) and from a self-service catalog
+// order (these need a human to actually go arrange something, not an instant price+add).
+// Same shape/pattern as FrontDeskAlert deliberately, so it reuses the same admin-review
+// workflow staff already know.
+model ConciergeRequest {
+  id         String   @id @default(cuid())
+  hotelId    String
+  sessionId  String
+  category   String // "transportation" | "tour" | "reservation" | "currency_exchange" | "courier" | "other"
+  details    String
+  roomNumber String?
+  guestName  String?
+  urgency    String   @default("normal") // "normal" | "urgent"
+  status     String   @default("open") // "open" | "in_progress" | "resolved"
+  createdAt  DateTime @default(now())
   agentNote  String?
 
   hotel   Hotel   @relation(fields: [hotelId], references: [id])

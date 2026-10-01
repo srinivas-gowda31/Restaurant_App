@@ -41,14 +41,42 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function callGroqChat(body) {
+// apiKey lets a caller use its own dedicated Groq key instead of this module's — see
+// groqChat.js and cuisineClassifier.js, which each now use a separate key so heavy use of one
+// (chat, especially) can't exhaust the shared daily budget and starve the others. Confirmed
+// directly: exactly that happened when chat and extraction shared one Groq account and chat
+// traffic silently broke catalog uploads and cuisine tagging too.
+//
+// maxRetries overrides MAX_RETRIES — extraction/cuisine classification (admin-only, not guest-
+// facing) are fine sitting through the default's honored Retry-After. Interactive chat isn't:
+// confirmed directly, a single rate-limited call sat through a real 24-39s Retry-After wait,
+// which is exactly the "inconsistent latency" a guest actually feels. groqChat.js passes 0 here
+// so a rate limit fails immediately instead of sleeping through it, letting assistant.js fail
+// over to a completely separate provider/quota in a fraction of the time instead.
+export async function callGroqChat(body, apiKey = GROQ_API_KEY, { maxRetries = MAX_RETRIES } = {}) {
   let attempt = 0;
   for (;;) {
-    const response = await fetch(GROQ_API_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    let response;
+    try {
+      response = await fetch(GROQ_API_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      // A raw network failure (connection reset, DNS hiccup) throws before there's any HTTP
+      // response to check a status on — confirmed hitting this directly (ECONNRESET) mid guest
+      // conversation, which crashed the whole backend process uncaught. Every Groq-backed
+      // feature in this project goes through this one function (chat, cuisine classification,
+      // catalog extraction), so this single fix covers all of them. Retry it the same as a
+      // 429/503 rather than letting one flaky connection take the whole process down.
+      if (attempt < maxRetries) {
+        attempt += 1;
+        await sleep(Math.min(500 * 2 ** (attempt - 1), MAX_RETRY_WAIT_MS));
+        continue;
+      }
+      throw err;
+    }
     if (response.ok) return response.json();
 
     // "Request too large" is a 429 with the same rate_limit_exceeded code as a transient
@@ -65,7 +93,7 @@ export async function callGroqChat(body) {
       }
     }
 
-    if (RETRYABLE_STATUS.has(response.status) && attempt < MAX_RETRIES) {
+    if (RETRYABLE_STATUS.has(response.status) && attempt < maxRetries) {
       attempt += 1;
       // Groq's 429s carry an exact Retry-After (seconds) — the free tier's limit is a token
       // budget that refills on a schedule, so honoring the real number gets through reliably

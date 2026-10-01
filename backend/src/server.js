@@ -1,5 +1,20 @@
 import "dotenv/config";
 import http from "http";
+// Without these, an error outside Express's own request cycle (a stray promise rejection in
+// realtime.js's WebSocket handling, a timer callback, anything not wrapped by express-async-
+// errors above) crashes the process with no application-level log line at all — confirmed
+// live, the dev server went silently unresponsive mid-session with nothing but Node's own
+// terse default dump to explain why. Logging first means a crash is at least diagnosable;
+// still exiting after (rather than limping on in an unknown state) is what a process
+// manager/restart policy is for in production.
+process.on("uncaughtException", (err) => {
+  console.error("[fatal] Uncaught exception:", err);
+  process.exit(1);
+});
+process.on("unhandledRejection", (err) => {
+  console.error("[fatal] Unhandled promise rejection:", err);
+  process.exit(1);
+});
 import express from "express";
 // Patches Express so a thrown/rejected error inside an async route handler reaches the
 // error-handling middleware below instead of becoming an unhandled rejection that can
@@ -12,9 +27,12 @@ import chatRouter from "./routes/chat.js";
 import voiceRouter from "./routes/voice.js";
 import menuRouter from "./routes/menu.js";
 import adminRouter from "./routes/admin.js";
+import superAdminRouter from "./routes/superAdmin.js";
 import ordersRouter from "./routes/orders.js";
 import sessionRouter from "./routes/session.js";
+import cartRouter from "./routes/cart.js";
 import { attachRealtimeProxy } from "./realtime.js";
+import { warmDatabase, startKeepAlive } from "./db.js";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -56,7 +74,9 @@ app.use("/api/voice", llmRateLimit, voiceRouter);
 app.use("/api", menuRouter);
 app.use("/api/orders", ordersRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/super-admin", superAdminRouter);
 app.use("/api/session", sessionRouter);
+app.use("/api/cart", cartRouter);
 
 app.use((err, req, res, next) => {
   // Prisma's "record to update/delete not found" — every admin PATCH/DELETE-by-id route
@@ -74,3 +94,8 @@ attachRealtimeProxy(server);
 server.listen(PORT, () => {
   console.log(`Hotel assistant backend listening on http://localhost:${PORT}`);
 });
+
+// Fire-and-forget — the server is already accepting requests above; this just races to warm
+// Prisma's per-table cache before a real guest's first order does it for us instead.
+warmDatabase();
+startKeepAlive();

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
-import { getOrCreateSession, prisma } from "../db.js";
+import { getOrCreateSession, getHotelBySlug, prisma } from "../db.js";
 import { transcribeAudio, synthesizeSpeech, describeGeminiError } from "../gemini.js";
 import { runAssistantTurn } from "../assistant.js";
 
@@ -9,12 +9,13 @@ const router = Router();
 
 router.post("/", upload.single("audio"), async (req, res) => {
   try {
-    const { sessionId } = req.body;
+    const { sessionId, hotel } = req.body;
     if (!sessionId || !req.file) {
       return res.status(400).json({ error: "sessionId and audio file are required." });
     }
 
-    await getOrCreateSession(sessionId);
+    const resolvedHotel = await getHotelBySlug(hotel);
+    await getOrCreateSession(sessionId, { hotelId: resolvedHotel?.id });
 
     const transcript = await transcribeAudio(req.file.buffer, req.file.mimetype || "audio/wav");
     if (!transcript) {

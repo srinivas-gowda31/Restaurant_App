@@ -2,6 +2,11 @@ import { callGroqChat } from "./groqExtract.js";
 import { CUISINES, normalizeCuisine } from "./cuisines.js";
 
 const GROQ_STRUCTURE_MODEL = process.env.GROQ_STRUCTURE_MODEL || "openai/gpt-oss-120b";
+// Own dedicated key (GROQ_CUISINE_API_KEY) — same reasoning as groqChat.js's GROQ_CHAT_API_KEY:
+// isolates this from extraction's own key so a big menu re-classification can't compete with
+// (or get starved by) catalog uploads sharing the same daily budget. Falls back to GROQ_API_KEY
+// if no dedicated key was configured.
+const GROQ_CUISINE_API_KEY = process.env.GROQ_CUISINE_API_KEY || process.env.GROQ_API_KEY;
 
 // Chunked to stay well under the structuring model's per-minute token budget (see
 // groqExtract.js) — a single request classifying 200+ dish names at once risks the same
@@ -45,7 +50,7 @@ Respond with ONLY a JSON object of this exact shape, one entry per item, same or
     reasoning_effort: "low",
     messages: [{ role: "user", content: prompt }],
     response_format: { type: "json_object" },
-  });
+  }, GROQ_CUISINE_API_KEY);
 
   const content = data.choices?.[0]?.message?.content || "";
   const parsed = parseJsonResponse(content);
